@@ -1,6 +1,23 @@
-# HARDER — verification report (1.2.0: standalone program + VST3 plugin)
+# HARDER — verification report (1.3.0: standalone program + VST3 plugin)
 
 All numbers below were measured in the build environment (Linux x86-64 VM, 2 cores; Windows binaries run under Wine 9).
+
+## D. New in 1.3.0: LAB > CONTROL (standalone keyboard and MIDI-controller mapping)
+
+| check | result |
+|---|---|
+| `tools/control_test.cpp` (ASan/UBSan): every key 1..0xE100 of the default map against the 1.2 keyboard handler; default notes for 16 channels; all 85 action ids parse back; bad ids refused; relative decoding (2's complement, sign bit, offset 64); rebinding a source; key stealing; JSON round trip; junk in control.json skipped | 61809 checks pass; the 33 default keys and the C1-G1 / C0-G0 notes are exactly the 1.2 behaviour |
+| Windows exe under Wine, real keys: KEY of PLAY clicked, P pressed, P pressed again; KEY of UNDO clicked, Space pressed | P plays; Space moves from PLAY / STOP to UNDO ("WAS PLAY / STOP"); control.json updated; default keys (2 = step toggle, Shift+3 = trigless) behave as before |
+| MIDI end to end in a test build of the exe (`-DHARDER_TEST_MIDI_INJECT`: messages read from a file enter the audio thread exactly where RtMidi's do): MIDI LEARN + click on the TUNE encoder + CC 21 | CC 21 = ENCODER 1; CC 21 = 0 / 127 set TUNE to -24 / +24 st; after switching the mapping to REL 2C, five 127s = -5 |
+| FIXED PARAM learned on STRT of track 1, then track 2 selected, CC 22 = 127 | track 1 STRT = 127 |
+| note C3 learned on PLAY, CC 64 (button) on STOP | the note starts, CC 64 >= 64 stops |
+| note C2 learned on step 1; note on, three relative +1 on ENCODER 1, note off | step 1 gets a TUNE lock of base + 3 (an Elektron-style lock from the controller), the step is not toggled |
+| default pad notes (audio thread): C#1 velocity 127 and 40 | sound recorded from the device, peak 0.554 vs 0.155; with REC on and playing, a D1 at velocity 80 is recorded as a trig with a velocity lock of 80 |
+| restart | mappings and modes restored from control.json |
+| plugin builds | MIDI path unchanged (fixed notes); VST3 host test and pluginval as below |
+
+Not verified here: a physical MIDI controller (no MIDI device in this VM; the RtMidi input itself is the 1.1 code);
+key names on a real French layout (Windows asks the active layout through GetKeyNameText; Wine reports US names).
 
 ## C. New in 1.2.0: SAMPLE machine and the user library
 

@@ -108,11 +108,26 @@ struct Core {
   SampleCache cache;                        // every sample seen this session (undo snapshots refer to samples by id)
   SampleRef engSmp[NSLOT];                  // what the audio engine points to (main thread)
   struct Retired { SampleRef r; uint64_t seq; }; std::vector<Retired> retired;   // freed once the engine let go
+  // ---------- standalone MIDI controller (Control.hpp) ----------
+  // The audio thread plays pads itself (padMap: note -> track + 1, per channel) and hands every note and CC to the UI
+  // through a single-producer / single-consumer ring (the UI maps them to buttons and knobs, and learns new ones).
+  struct MidiMsg { uint8_t st = 0, d1 = 0, d2 = 0; };
+  static constexpr uint32_t MQN = 1024;
+  MidiMsg mq[MQN]; std::atomic<uint32_t> mqW{ 0 }, mqR{ 0 };
+  bool midiPush(const MidiMsg& m) { const uint32_t w = mqW.load(std::memory_order_relaxed); if (w - mqR.load(std::memory_order_acquire) >= MQN) return false; mq[w % MQN] = m; mqW.store(w + 1, std::memory_order_release); return true; }
+  bool midiPop(MidiMsg& m) { const uint32_t r = mqR.load(std::memory_order_relaxed); if (r == mqW.load(std::memory_order_acquire)) return false; m = mq[r % MQN]; mqR.store(r + 1, std::memory_order_release); return true; }
+  std::atomic<uint8_t> padMap[16][128];
+  std::atomic<bool> midiMapped{ false };   // the standalone UI owns the MIDI mapping (else the plugin's fixed notes apply)
+#ifdef HARDER_TEST_MIDI_INJECT
+  MidiMsg iq[MQN]; std::atomic<uint32_t> iqW{ 0 }, iqR{ 0 };   // test builds: UI -> audio, treated like MIDI input
+  bool injectPush(const MidiMsg& m) { const uint32_t w = iqW.load(std::memory_order_relaxed); if (w - iqR.load(std::memory_order_acquire) >= MQN) return false; iq[w % MQN] = m; iqW.store(w + 1, std::memory_order_release); return true; }
+  bool injectPop(MidiMsg& m) { const uint32_t r = iqR.load(std::memory_order_relaxed); if (r == iqW.load(std::memory_order_acquire)) return false; m = iq[r % MQN]; iqR.store(r + 1, std::memory_order_release); return true; }
+#endif
   // output level: after the limiter, like a hardware MAIN knob; not part of the project or of exports (dB, <= -80 = off)
   std::atomic<float> outDb{ 0 };
   void applyUiStateDsp() { JVal j; if (parseJson(uiState, j) && j.isObj()) { const double d = j["outDb"].num(0); outDb.store((float)(d < -80 ? -80 : d > 0 ? 0 : d)); } }
 
-  Core() { for (auto& h : hostVal) h.store(0); for (auto& d : dirty) d.store(0); for (auto& m : machineOf) m.store(0); for (auto& o : ownUntil) o.store(0); }
+  Core() { for (auto& h : hostVal) h.store(0); for (auto& d : dirty) d.store(0); for (auto& m : machineOf) m.store(0); for (auto& o : ownUntil) o.store(0); for (auto& c : padMap) for (auto& n : c) n.store(0); }
 
   // ---------- host parameter mirror ----------
   double hostFromModel(int idx) const {

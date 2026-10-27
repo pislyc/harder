@@ -6,6 +6,7 @@
 #include "HarderShared.hpp"
 #include "Export.hpp"
 #include "Library.hpp"
+#include "Control.hpp"
 #include "Fonts.hpp"
 #include <chrono>
 #include <deque>
@@ -89,6 +90,8 @@ enum : int {
   ID_EXLOOPS = 560, ID_EXSTEMS = 566, ID_EXLOOP, ID_EXKIT, ID_AUDDEF = 599, ID_AUDDEV = 600, ID_SR = 670, ID_BUF = 680, ID_MIDI = 700, ID_RESCAN = 740, ID_AUDSCROLL, ID_MUTE = 750, ID_SOLO, ID_TFADER, ID_OFADER,
   // user library
   ID_SSRC = 2000, ID_GSRC = 2010, ID_SCAT = 2100, ID_GCAT = 2300, ID_SITEM = 2500, ID_GITEM = 2600, ID_LBTN = 2700, ID_TEOK = 2790, ID_TECANCEL, ID_CATPREV, ID_CATNEXT, ID_SLOTCLR,
+  // LAB > CONTROL (standalone)
+  ID_CGROUP = 3000, ID_CKEY = 3020, ID_CMIDI = 3040, ID_CLEARN = 3060, ID_CFIXED, ID_CMODE = 3070, ID_CDEL = 3080, ID_CRESET = 3090,
 };
 static const int PERF_PARAMS[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 18, 19, 20, 24, 25, 26, 27, 28, 29, 40 };
 constexpr int NPERFP = sizeof(PERF_PARAMS) / sizeof(PERF_PARAMS[0]);
@@ -135,7 +138,7 @@ class HarderUI : public UI {
   int fileOp = 0;   // 1 save, 2 load, 3 export loop, 4 export kit
   // ---- standalone
   bool standalone = false;
-  std::map<int, int> keyHeld, keyPerf; std::set<int> keysDown; bool allKey = false;
+  std::map<int, int> keyHeld, keyPerf; std::set<int> keysDown;   // held step / perf keys by source (key or MIDI source id)
   std::string lastSavedProject, lastSavedUi; double nextAutosave = 0;
   bool settingsApplied = false, audioListed = false; std::string chosenDev, audioMsg; int devScroll = 0;
   std::vector<std::string> audioDevs, midiNames; std::vector<bool> midiOpen; std::string currentDev;
@@ -165,6 +168,9 @@ class HarderUI : public UI {
   struct TextEdit { int act = TE_NONE; std::string text, title, arg; } te;
   double lastKeyT = 0; int lastKeyCode = -1; bool sawPuglText = false;
   FontId fCjk = -1; bool cjkTried = false;
+  // ---- keyboard / MIDI controller mapping (standalone)
+  ControlMap cmap; int ctlGroup = 0, midiScroll = 0; Action keyLearn, learnAct; bool midiLearn = false, learnFixed = false;
+  std::string lastMidi; std::set<int> funcSrc, allSrc, ccDown; int learnedSrc = -1; double learnedUntil = 0;
 
 public:
   HarderUI() : UI(DISTRHO_UI_DEFAULT_WIDTH, DISTRHO_UI_DEFAULT_HEIGHT) {
@@ -181,6 +187,7 @@ public:
     if (core) {
       std::lock_guard<std::recursive_mutex> g(core->mtx);
       loadUiState(); seenModelSeq = core->modelSeq.load();
+      if (standalone) loadControl();
       if (S().tracks[0].pre.size()) { const int pi = presetIndex(S().tracks[0].pre); if (pi >= 0) mat = PRESETS[pi].mat; }
     }
     th = light ? lightTheme() : darkTheme();
@@ -197,8 +204,8 @@ protected:
   Project& S() { return *core->S; }
   Pattern& pat() { return S().patterns[S().cur]; }
   bool isMaster() const { return tr == 8; }
-  bool func() const { return shiftDown || funcLatch; }
-  bool allMode() const { return allLatch || allKey; }
+  bool func() const { return shiftDown || funcLatch || !funcSrc.empty(); }
+  bool allMode() const { return allLatch || !allSrc.empty(); }
   const PDef& defOf(int i) const { return isMaster() ? T().master[i] : T().track(core->S->tracks[tr].m, i); }
   int pageBase() const { return isMaster() ? mpage * 8 : PAGE_BASE[page]; }
   std::vector<int> heldSteps() const { std::set<int> s = latched; if (heldStep >= 0) s.insert(heldStep); for (auto& k : keyHeld) s.insert(k.second); return std::vector<int>(s.begin(), s.end()); }
@@ -611,7 +618,7 @@ protected:
   // ================= files / ui state =================
   void loadUiState() {
     JVal j; if (!parseJson(core->uiState, j)) return;
-    light = j["light"].truthy(); drawer = j["drawer"].truthy(); scaleIdx = (int)clampd(j["scale"].num(2), 0, 5); labTab = (int)clampd(j["tab"].num(0), 0, standalone ? 5 : 4);
+    light = j["light"].truthy(); drawer = j["drawer"].truthy(); scaleIdx = (int)clampd(j["scale"].num(2), 0, 5); labTab = (int)clampd(j["tab"].num(0), 0, standalone ? 6 : 4);
     outDb = (float)clampd(j["outDb"].num(0), -80, 0); core->outDb.store(outDb);
     sndSrc = j["sndSrc"].num(0) == 1 ? 1 : 0; grvSrc = j["grvSrc"].num(0) == 1 ? 1 : 0; const bool al = j["autoLoad"].truthy(); if (al != autoLoad) { autoLoad = al; autoArmed = false; }
     sndCat = j["sndCat"].str(); grvCat = j["grvCat"].str();
@@ -771,7 +778,13 @@ protected:
     if (standalone && now >= nextAutosave) { nextAutosave = now + 2000; autosaveNow(); }
     if (drawer && ((labTab == 1 && sndSrc == 1) || (labTab == 0 && grvSrc == 1))) scanLib();
     if (autoLoad) autoLoadScan();
+    if (standalone) { pollMidi();
+#ifdef HARDER_TEST_MIDI_INJECT
+      injectTestMidi();
+#endif
+    }
     if (te.act != TE_NONE && std::fmod(now, 500) < 30) needRepaint = true;   // caret
+    if (midiLearn || keyLearn.k != AC_NONE) needRepaint = true;   // blinking learn state
     core->gcSamples();
     { std::lock_guard<std::mutex> eg(expMtx); if (expStatus != expShown) { expShown = expStatus; needRepaint = true; } }
     if (core->modelSeq.load() != seenModelSeq) {   // project replaced by the host (state load)
@@ -848,6 +861,7 @@ protected:
   // ---------- input helpers ----------
   bool press(int id, R r) {
     if (ph == PH_PRESS && !consumed && r.in(mx, my)) {
+      if (midiLearn) { Action a; if (learnActionForId(id, a)) { consumed = true; setLearnTarget(a); return false; } }   // MIDI learn: the control becomes the target
       consumed = true; pressedId = id; dbl = (lastPressId == id && nowMs() - lastPressT < 330); lastPressId = id; lastPressT = nowMs(); return true;
     }
     return false;
@@ -988,6 +1002,7 @@ protected:
   // ================= frame =================
   void frame() {
     sliderRects.clear(); faderRects.clear(); catDrop.clear();
+    if (keyLearn.k != AC_NONE && !(drawer && labTab == 6)) keyLearn = Action();
     if (te.act != TE_NONE && !(drawer && ((labTab == 1 && sndSrc == 1 && teActive(1)) || (labTab == 0 && grvSrc == 1 && teActive(2))))) te = TextEdit();   // field no longer visible
     if (D()) {
       beginPath(); rect(0, 0, WW, HCLOSED + (drawer ? LABH : 0)); fillColor(th.page); fill();
@@ -1004,14 +1019,16 @@ protected:
     // status pill: transport source and CPU
     const bool hs = core->hostSynced.load(), hp = core->hostPlaying.load();
     char b[96];
-    if (standalone) {
+    if (standalone && midiLearn) std::snprintf(b, sizeof b, "MIDI LEARN  \xc2\xb7  %s", learnAct.k == AC_NONE ? "CLICK A CONTROL" : "MOVE THE CONTROLLER");
+    else if (standalone) {
       if (!isAudioDeviceOpen()) std::snprintf(b, sizeof b, "NO AUDIO OUTPUT  \xc2\xb7  LAB > AUDIO");
       else std::snprintf(b, sizeof b, "%s  \xc2\xb7  %u HZ  \xc2\xb7  %u", playing ? "PLAYING" : "STANDALONE", audioRate(), audioBuffer());
     } else if (hs || hp) std::snprintf(b, sizeof b, "LIVE SYNC  %.1f BPM", core->hostBpm.load()); else std::snprintf(b, sizeof b, playing ? "INTERNAL CLOCK" : "WAITING FOR LIVE  \xc2\xb7  PLAY = INTERNAL");
     char c[32]; std::snprintf(c, sizeof c, "DSP %.1f%%", core->cpuPermille.load() / 10.0);   // plugin audio time / buffer time, 0.5 s average
     font(fPrint, 11, 1.6f); const float tw = txtW(b) + txtW(c) + 64;
     R pill(WW - 24 - tw, 24, tw, 30); rrect(pill, 15, th.cap); rstroke(pill, 15, th.line);
-    if (standalone) ledDot(pill.x + 16, pill.cy(), playing || !isAudioDeviceOpen(), isAudioDeviceOpen() ? th.ok : th.rec);
+    if (standalone && midiLearn) ledDot(pill.x + 16, pill.cy(), std::fmod(nowMs(), 600) < 350, th.led);
+    else if (standalone) ledDot(pill.x + 16, pill.cy(), playing || !isAudioDeviceOpen(), isAudioDeviceOpen() ? th.ok : th.rec);
     else ledDot(pill.x + 16, pill.cy(), hs && playing, hs ? th.ok : th.led);
     txt(pill.x + 30, pill.cy() + 4, b, th.printHi);
     txt(pill.r() - 14, pill.cy() + 4, c, th.print, ALIGN_RIGHT | ALIGN_BASELINE);
@@ -1520,8 +1537,8 @@ protected:
   void lab() {
     const float y0 = HCLOSED - 6; R box(PX, y0, PW, LABH - 14);
     if (D()) { rrect(box, 12, th.modBg); rstroke(box, 12, th.modEdge); }
-    static const char* const TABS[6] = { "GROOVE", "SOUND", "KITS", "PERFORM", "PROJECT", "AUDIO" };
-    const int ntabs = standalone ? 6 : 5;
+    static const char* const TABS[7] = { "GROOVE", "SOUND", "KITS", "PERFORM", "PROJECT", "AUDIO", "CONTROL" };
+    const int ntabs = standalone ? 7 : 5;
     for (int k = 0; k < ntabs; k++) {
       R r(box.x + 14, box.y + 16 + k * 40, 118, 32);
       if (clicked(ID_TAB + k, r)) { labTab = k; saveUiState(); }
@@ -1532,7 +1549,7 @@ protected:
     }
     if (D()) { beginPath(); rect(box.x + 146, box.y + 14, 1, box.h - 28); fillColor(th.modEdge); fill(); }
     const R c(box.x + 164, box.y + 14, box.w - 182, box.h - 28);
-    switch (labTab) { case 0: labGroove(c); break; case 1: labSound(c); break; case 2: labKits(c); break; case 3: labPerform(c); break; case 4: labProject(c); break; default: if (standalone) labAudio(c); else labProject(c); }
+    switch (labTab) { case 0: labGroove(c); break; case 1: labSound(c); break; case 2: labKits(c); break; case 3: labPerform(c); break; case 4: labProject(c); break; case 6: if (standalone) labControl(c); else labProject(c); break; default: if (standalone) labAudio(c); else labProject(c); }
     if (D() && drag.kind == 5 && dragMoved) {   // the dragged item follows the mouse
       font(fPrintB, 12, 0.2f); const std::string l = fit(dragLabel, 220); const R g(dragX + 12, dragY - 12, txtW(l) + 22, 24);
       rrect(R(g.x, g.y + 3, g.w, g.h), 7, th.shadow); rrect(g, 7, th.cap); rstroke(g, 7, th.led); txt(g.x + 11, g.cy() + 4.5f, l, th.printHi);
@@ -1763,6 +1780,244 @@ protected:
     }
     if (modal && D()) { globalAlpha(1); teBar(bar); }
   }
+  // ================= standalone controls: keyboard and MIDI mappings (LAB > CONTROL) =================
+  std::string controlPath() { const std::string d = harderConfigDir(); return d.empty() ? d : d + "control.json"; }
+  void loadControl() {
+    std::string txt; JVal j;
+    if (readTextFile(controlPath(), txt) && parseJson(txt, j)) cmap.fromJson(j); else cmap.defaults();
+    pushPadTable(); core->midiMapped.store(true);
+  }
+  void saveControl() { std::string out; writeJson(out, cmap.toJson()); writeFileAtomic(controlPath(), out); pushPadTable(); }
+  // notes bound to PAD are played by the audio thread (no UI latency): give it the table
+  void pushPadTable() {
+    uint8_t t[16][128]; std::memset(t, 0, sizeof t);
+    for (int pass = 0; pass < 2; pass++)   // any-channel bindings first, exact channels override
+      for (const MidiBind& b : cmap.midi) if (b.type == MT_NOTE && b.a.k == AC_PAD && (pass == 0) == (b.ch < 0)) { if (b.ch < 0) for (int c = 0; c < 16; c++) t[c][b.num] = (uint8_t)(b.a.i + 1); else t[b.ch][b.num] = (uint8_t)(b.a.i + 1); }
+    // a note bound to something else on a channel must not play a pad there
+    for (const MidiBind& b : cmap.midi) if (b.type == MT_NOTE && b.a.k != AC_PAD) { if (b.ch < 0) for (int c = 0; c < 16; c++) t[c][b.num] = 0; else t[b.ch][b.num] = 0; }
+    for (int c = 0; c < 16; c++) for (int n = 0; n < 128; n++) core->padMap[c][n].store(t[c][n], std::memory_order_relaxed);
+  }
+  std::string keyLabel(int key) {
+    if (!key) return "\xe2\x80\x94";
+    if (key >= 0xE000) return specialKeyName(key);
+    std::string n = keyNameForScancode(key); if (n.empty()) n = usKeyName(key); if (n.empty()) { char b[16]; std::snprintf(b, sizeof b, "#%02X", key); n = b; }
+    return upper(n);
+  }
+  std::string actName(const Action& a) {
+    if (a.k == AC_PARAM) {
+      const PDef& d = a.tr == 8 ? T().master[a.i] : T().track(S().tracks[a.tr].m, a.i);
+      return (a.tr == 8 ? std::string("FX ") : "T" + std::to_string(a.tr + 1) + " ") + (d.valid() ? d.n : "?");
+    }
+    return actLabel(a);
+  }
+  // the panel control under the mouse, as a mappable action (MIDI learn by clicking the control)
+  bool learnActionForId(int id, Action& a) {
+    if (id >= ID_PAT && id < ID_PAT + NPAT) { a = act(AC_PAT, id - ID_PAT); return true; }
+    if (id == ID_BPM) { a = act(AC_BPM); return true; } if (id == ID_SWING) { a = act(AC_SWING); return true; }
+    if ((id >= ID_ENC && id < ID_ENC + 8) || (id >= ID_CELL && id < ID_CELL + 8)) {
+      const int k = id >= ID_ENC ? id - ID_ENC : id - ID_CELL;
+      if (!learnFixed) { a = act(AC_ENC, k); return true; }
+      const int i = pageBase() + k; if (!defOf(i).valid()) return false; a = act(AC_PARAM, i, tr); return true;
+    }
+    if (id >= ID_PAGE && id < ID_PAGE + 7) { a = act(AC_PAGE, id - ID_PAGE); return true; }
+    if (id >= ID_TRACK && id < ID_TRACK + NTR) { a = act(AC_TRACK, id - ID_TRACK); return true; }
+    if (id >= ID_TRIG && id < ID_TRIG + 16) { a = act(AC_STEP, id - ID_TRIG); return true; }
+    if (id >= ID_SPAGE && id < ID_SPAGE + 4) { a = act(AC_SPAGE, id - ID_SPAGE); return true; }
+    switch (id) {
+      case ID_FUNC: a = act(AC_FUNC); return true; case ID_REC: a = act(AC_REC); return true; case ID_FILL: a = act(AC_FILL); return true;
+      case ID_ALL: a = act(AC_ALL); return true; case ID_PLAY: a = act(AC_PLAY); return true; case ID_STOP: a = act(AC_STOP); return true;
+      case ID_PERF: a = act(AC_PERF); return true; case ID_UNDO: a = act(AC_UNDO); return true;
+      case ID_COPY: a = act(AC_COPY); return true; case ID_PASTE: a = act(AC_PASTE); return true; case ID_CLEAR: a = act(AC_CLEAR); return true; case ID_CLRLK: a = act(AC_CLEARLOCKS); return true;
+      case ID_MUTE: a = act(AC_MUTE); return true; case ID_SOLO: a = act(AC_SOLO); return true;
+      case ID_TFADER: a = act(AC_TVOL); return true; case ID_OFADER: a = act(AC_OUT); return true; case ID_PULL: a = act(AC_LAB); return true;
+    }
+    return false;
+  }
+  void setLearnTarget(const Action& a) { learnAct = a; midiLearn = true; toast("NOW MOVE / PRESS: " + actName(a)); needRepaint = true; }
+  // a step key held from the keyboard or a controller (src = key or MIDI source)
+  void stepKey(int src, int si, bool press) {
+    if (press) {
+      if (perfMode && !isMaster()) { keyPerf[src] = si; perfDown(si); }
+      else if (func()) toggleTrigless(spage * 16 + si);
+      else { keyHeld[src] = spage * 16 + si; edited = false; schedulePreview(); }
+    } else {
+      auto pf = keyPerf.find(src); if (pf != keyPerf.end()) { perfUp(pf->second); keyPerf.erase(pf); }
+      auto it = keyHeld.find(src); if (it != keyHeld.end()) { const int st = it->second; keyHeld.erase(it); if (!edited) toggleStep(st); schedulePreview(); }
+    }
+  }
+  void doButton(const Action& a, bool press, int src, int vel) {
+    switch (a.k) {
+      case AC_PLAYSTOP: if (press) { if (playing) stop(); else play(); } break;
+      case AC_PLAY: if (press) play(); break;
+      case AC_STOP: if (press) stop(); break;
+      case AC_REC: if (press) { recOn = !recOn; if (recOn) pushUndo(); toast(recOn ? "LIVE REC ON" : "LIVE REC OFF"); } break;
+      case AC_FILL: if (press) { if (func()) { fillLatch = !fillLatch; setFill(fillLatch); } else setFill(true); } else if (!fillLatch) setFill(false); break;
+      case AC_FUNC: if (press) funcSrc.insert(src); else funcSrc.erase(src); break;
+      case AC_ALL: if (press) allSrc.insert(src); else allSrc.erase(src); break;
+      case AC_PERF: if (press) { if (isMaster()) toast("SELECT A TRACK"); else { perfMode = !perfMode; latched.clear(); schedulePreview(); } } break;
+      case AC_UNDO: if (press) undo(); break;
+      case AC_STEP: stepKey(src, a.i, press); break;
+      case AC_PAD: if (press) { if (func()) toggleMute(a.i); else { core->sendAud(a.i, vel, nullptr); flashUntil[a.i] = nowMs() + 90; if (recOn && playing) { Locks L; if (vel != 110) L.set(41, vel); recPerf(a.i, &L); } } } break;
+      case AC_TRACK: if (press) trackPress(a.i); break;
+      case AC_TRACKPREV: case AC_TRACKNEXT: if (press) selectTrack((tr + (a.k == AC_TRACKNEXT ? 1 : -1) + NTR) % NTR); break;
+      case AC_MUTE: if (press && tr < 8) toggleMute(tr); break;
+      case AC_SOLO: if (press && tr < 8) toggleSolo(tr); break;
+      case AC_PAT: if (press) patternPress(a.i); break;
+      case AC_PAGE: if (press) { if (isMaster()) { if (a.i < 4) mpage = a.i; } else page = a.i; schedulePreview(); } break;
+      case AC_PAGEPREV: case AC_PAGENEXT: if (press) { const int d = a.k == AC_PAGENEXT ? 1 : -1; if (isMaster()) mpage = (mpage + d + 4) % 4; else page = (page + d + 7) % 7; schedulePreview(); } break;
+      case AC_SPAGE: if (press) spage = a.i; break;
+      case AC_COPY: if (press) copyBtn(); break;
+      case AC_PASTE: if (press) pasteBtn(); break;
+      case AC_CLEAR: if (press) clearBtn(); break;
+      case AC_CLEARLOCKS: if (press) clearLocks(); break;
+      case AC_RELEASE: if (press) { latched.clear(); schedulePreview(); } break;
+      case AC_LAB: if (press) { drawer = !drawer; saveUiState(); applySize(); } break;
+    }
+    needRepaint = true;
+  }
+  // knobs: v = CC value; mode ABS maps 0..127 onto the range, the relative modes step from the current value
+  void doKnob(const Action& a, int v, int mode) {
+    const bool rel = mode != CM_ABS; const int d = rel ? relDelta(mode, v) : 0; if (rel && !d) return;
+    const bool fine = func(); const double u = v / 127.0;
+    switch (a.k) {
+      case AC_ENC: {
+        const int i = pageBase() + a.i; const PDef& pd = defOf(i); if (!pd.valid()) return;
+        const double range = pd.max - pd.min; double nv = rel ? getVal(i) + d * (range >= 50 && fine ? 0.2 : 1) : pd.min + u * range;
+        nv = stepRound(clampd(nv, pd.min, pd.max), pd); if (nv != getVal(i)) setVal(i, nv, false);
+        break;
+      }
+      case AC_PARAM: {
+        const int t = a.tr, i = a.i; const PDef& pd = t == 8 ? T().master[i] : T().track(S().tracks[t].m, i); if (!pd.valid()) return;
+        const double cur = t == 8 ? S().master[i] : S().tracks[t].p[i], range = pd.max - pd.min;
+        double nv = rel ? cur + d * (range >= 50 && fine ? 0.2 : 1) : pd.min + u * range; nv = stepRound(clampd(nv, pd.min, pd.max), pd);
+        if (nv == cur) return;
+        if (t < 8 && (i == 22 || i == 23)) { S().tracks[t].p[i] = nv; core->sendParam(t, i, nv); } else setBase(t, i, nv, false);
+        if (t == tr) schedulePreview();
+        break;
+      }
+      case AC_BPM: numSet(ID_BPM, rel ? S().bpm + d * (fine ? 0.1 : 1) : 60 + v); break;      // absolute: 60-187 BPM
+      case AC_SWING: numSet(ID_SWING, rel ? S().swing + d : 50 + jsround(u * 30)); break;
+      case AC_OUT: { const double cur = outDb <= -80 ? -70 : outDb; const double db = rel ? clampd(cur + d * (fine ? 0.1 : 0.5), -70, 0) : iecInv(u * iec(0)); applyFader(ID_OFADER, db, true); break; }
+      case AC_TVOL: {
+        if (tr >= 8) return; const double cur = volToDb(S().tracks[tr].p[21]);
+        const double db = rel ? clampd((cur < -69.9 ? -70 : cur) + d * (fine ? 0.1 : 0.5), -70, 6) : iecInv(u * iec(6));
+        const double vol = clampd(jsround(dbToVol(db) * 10) / 10, 0, 127); if (vol != S().tracks[tr].p[21]) { setBase(tr, 21, vol, false); schedulePreview(); }
+        break;
+      }
+    }
+    needRepaint = true;
+  }
+  // MIDI from the audio thread: learn, or play the mapping
+  void pollMidi() {
+    Core::MidiMsg m; int n = 0;
+    while (n++ < 1024 && core->midiPop(m)) handleMidiMsg(m);
+  }
+  void handleMidiMsg(const Core::MidiMsg& m) {
+    const int st = m.st & 0xF0, ch = m.st & 15; const bool isNote = st == 0x80 || st == 0x90, on = st == 0x90 && m.d2 > 0;
+    if (!isNote && st != 0xB0) return;
+    const int type = isNote ? MT_NOTE : MT_CC;
+    { char b[64]; if (isNote) std::snprintf(b, sizeof b, "NOTE %s %s \xc2\xb7 VEL %d \xc2\xb7 CH %d", noteName(m.d1).c_str(), on ? "ON" : "OFF", m.d2, ch + 1);
+      else std::snprintf(b, sizeof b, "CC %d = %d \xc2\xb7 CH %d", m.d1, m.d2, ch + 1);
+      lastMidi = b; needRepaint = true; }
+    if (midiLearn) {
+      if (learnAct.k == AC_NONE) return;
+      if (isNote && !on) return;
+      if (learnAct.knob() && type != MT_CC) { toast("TURN A KNOB OR MOVE A FADER"); return; }
+      if (!isNote && !learnAct.knob() && m.d2 == 0) return;   // the release of a CC button
+      MidiBind nb; nb.type = (int8_t)type; nb.ch = (int8_t)ch; nb.num = m.d1; nb.a = learnAct; nb.mode = CM_ABS;
+      cmap.bind(nb); saveControl(); midiScroll = 0; toast(midiSrcLabel(nb) + " = " + actName(learnAct));
+      learnAct = Action(); learnedSrc = midiSrcId(type, ch, m.d1); learnedUntil = nowMs() + 400;   // the rest of this gesture is not played
+      return;
+    }
+    const int src = midiSrcId(type, ch, m.d1);
+    if (src == learnedSrc && nowMs() < learnedUntil) return;
+    const MidiBind* bnd = cmap.find(type, ch, m.d1); if (!bnd) return;
+    const Action a = bnd->a;
+    if (a.knob()) { if (type == MT_CC) doKnob(a, m.d2, bnd->mode); return; }
+    bool press;
+    if (isNote) press = on;
+    else { press = m.d2 >= 64; const bool was = ccDown.count(src) > 0; if (press == was) return; if (press) ccDown.insert(src); else ccDown.erase(src); }
+    if (a.k == AC_PAD && isNote && core->padMap[ch][m.d1].load() == a.i + 1) {   // already played by the audio thread
+      if (on) { flashUntil[a.i] = nowMs() + 90; if (recOn && playing) { Locks L; L.set(41, m.d2); recPerf(a.i, &L); } }
+      return;
+    }
+    doButton(a, press, src, isNote ? m.d2 : 110);
+  }
+  void learnKey(int key) {
+    const Action a = keyLearn; keyLearn = Action();
+    if (key == 0x0E || key == 0x53 || key == 0xE07F) { cmap.setKey(a, 0); saveControl(); toast(actName(a) + ": NO KEY"); return; }   // Backspace / Delete clear
+    if (!keyAssignable(key)) { toast("THAT KEY CANNOT BE USED"); return; }
+    const Action lost = cmap.setKey(a, key); saveControl();
+    toast(keyLabel(key) + " = " + actName(a) + (lost.k != AC_NONE ? " (WAS " + actName(lost) + ")" : ""));
+  }
+  // LAB > CONTROL
+  void labControl(R c) {
+    h2(c.x, c.y + 12, "CONTROL", "computer keyboard and MIDI controller");
+    const auto& G = actGroups(); ctlGroup = (int)clampd(ctlGroup, 0, (int)G.size() - 1);
+    float x = c.x;
+    for (int g = 0; g < (int)G.size(); g++) { const float w = chipW(G[g].name, true); if (chip(ID_CGROUP + g, R(x, c.y + 24, w, 22), G[g].name, g == ctlGroup, true)) { ctlGroup = g; keyLearn = Action(); } x += w + 5; }
+    const std::vector<Action>& L = G[ctlGroup].acts;
+    if (D()) { font(fPrint, 9.5f, 1.2f); for (int col = 0; col < (L.size() > 9 ? 2 : 1); col++) { txt(c.x + 118 + col * 290, c.y + 66, "KEY", th.print); txt(c.x + 188 + col * 290, c.y + 66, "MIDI", th.print); } }
+    for (int k = 0; k < (int)L.size() && k < 18; k++) {
+      const Action& a = L[k]; const float rx = c.x + (k / 9) * 290, ry = c.y + 72 + (k % 9) * 26;
+      if (D()) { font(fPrint, 11.5f, 0.6f); txt(rx, ry + 15, fit(actName(a), 112), th.printHi); }
+      // key
+      const R kr(rx + 116, ry, 66, 21);
+      if (a.knob()) { if (D()) { font(fPrint, 11, 1); txt(kr.cx(), kr.y + 15, "\xe2\x80\x94", th.print, ALIGN_CENTER | ALIGN_BASELINE); } }
+      else {
+        const bool learning = keyLearn == a && keyLearn.k != AC_NONE;
+        const int key = cmap.keyFor(a);
+        if (chip(ID_CKEY + k, kr, learning ? (std::fmod(nowMs(), 800) < 500 ? "PRESS\xe2\x80\xa6" : "") : keyLabel(key), learning || key, true)) { keyLearn = learning ? Action() : a; midiLearn = false; learnAct = Action(); }
+        if (learning) needRepaint = true;
+      }
+      // MIDI
+      const R mr(rx + 186, ry, 92, 21); const std::vector<int> mb = cmap.midiFor(a);
+      const bool ml = midiLearn && learnAct == a && learnAct.k != AC_NONE;
+      std::string ms = mb.empty() ? "\xe2\x80\x94" : (cmap.midi[mb[0]].type == MT_NOTE ? noteName(cmap.midi[mb[0]].num) : "CC " + std::to_string(cmap.midi[mb[0]].num)) + (mb.size() > 1 ? " +" + std::to_string(mb.size() - 1) : "");
+      if (ml) ms = std::fmod(nowMs(), 800) < 500 ? "MOVE\xe2\x80\xa6" : "";
+      if (chip(ID_CMIDI + k, mr, ms, ml || !mb.empty(), true)) { if (ml) { learnAct = Action(); } else { keyLearn = Action(); setLearnTarget(a); } }
+      if (ml) needRepaint = true;
+    }
+    if (D()) {
+      std::string hint = G[ctlGroup].name == std::string("KNOBS")
+        ? "ENCODER n follows the panel: track, page and held steps (hold a step + turn = parameter lock)."
+        : "Click KEY, then press a key (Backspace: none). Click MIDI, then press a pad or key on the controller.";
+      font(fPrint, 10.5f, 0.3f); txt(c.x, c.b() - 2, fit(hint, 570), th.print);
+    }
+    // ---- MIDI column
+    const float rx = c.x + 596, rw = c.r() - rx;
+    if (D()) { beginPath(); rect(rx - 14, c.y + 4, 1, c.h - 8); fillColor(th.modEdge); fill(); }
+    h2(rx, c.y + 12, "MIDI");
+    if (btn(ID_CLEARN, R(rx, c.y + 24, 120, 28), midiLearn ? "LEARN ON" : "MIDI LEARN", midiLearn)) { midiLearn = !midiLearn; learnAct = Action(); keyLearn = Action(); if (midiLearn) toast("CLICK A CONTROL, THEN MOVE THE CONTROLLER"); }
+    { const char* L2[2] = { "FOLLOW PANEL", "FIXED PARAM" }; float x2 = rx + 128; if (D()) { font(fPrint, 9.5f, 1.2f); txt(x2, c.y + 30, "ENCODERS LEARN AS", th.print); }
+      for (int k = 0; k < 2; k++) { const float w = chipW(L2[k], true); if (chip(ID_CFIXED + k, R(x2, c.y + 34, w, 20), L2[k], learnFixed == (k == 1), true)) learnFixed = k == 1; x2 += w + 4; } }
+    if (D()) {
+      std::string s; Color col = th.print;
+      if (midiLearn) { col = th.led; s = learnAct.k == AC_NONE ? "CLICK A BUTTON, KNOB OR FADER ON THE PANEL (OR A MIDI CELL)" : "NOW MOVE / PRESS ON THE CONTROLLER: " + actName(learnAct); }
+      else s = lastMidi.empty() ? (midiNames.empty() ? "NO MIDI INPUT \xc2\xb7 LAB > AUDIO" : "MIDI IN: WAITING") : "LAST: " + lastMidi;
+      font(fPrint, 10.5f, 0.8f); txt(rx, c.y + 72, fit(s, rw), col);
+    }
+    // bindings
+    const int vis = 7; const R lr(rx, c.y + 80, rw, vis * 26);
+    const int n = (int)cmap.midi.size(), maxScroll = std::max(0, n - vis);
+    if (scrolled(lr)) midiScroll = (int)clampd(midiScroll + (wheel > 0 ? -1 : 1), 0, maxScroll);
+    midiScroll = std::min(midiScroll, maxScroll);
+    int del = -1;
+    for (int k = midiScroll; k < n && k < midiScroll + vis; k++) {   // newest first
+      const int bi = n - 1 - k; MidiBind& b = cmap.midi[bi]; const float ry = lr.y + (k - midiScroll) * 26; const int vk = k - midiScroll;
+      if (D()) { font(fNum, 9.5f); txt(rx, ry + 15, midiSrcLabel(b), th.print); font(fPrint, 11.5f, 0.5f); txt(rx + 132, ry + 15, fit(actName(b.a), rw - 132 - 104), th.printHi); }
+      if (b.type == MT_CC && b.a.knob()) {
+        if (chip(ID_CMODE + vk, R(rx + rw - 100, ry + 1, 70, 20), CC_MODE_NAMES[b.mode], b.mode != CM_ABS, true)) { b.mode = (int8_t)((b.mode + 1) % CM_COUNT); saveControl(); toast(std::string("CC ") + std::to_string(b.num) + ": " + CC_MODE_NAMES[b.mode]); }
+      }
+      if (chip(ID_CDEL + vk, R(rx + rw - 24, ry + 1, 22, 20), "\xc3\x97", false, true)) del = bi;
+    }
+    if (del >= 0) { cmap.midi.erase(cmap.midi.begin() + del); saveControl(); toast("MAPPING REMOVED"); }
+    if (n == 0 && D()) para(rx, lr.y + 4, rw, "No MIDI mappings. MIDI LEARN, click a control, move the controller.", th.print, 11.5f);
+    if (D() && maxScroll > 0) { const float th_ = lr.h * vis / (vis + maxScroll); rrect(R(lr.r() + 4, lr.y, 3, lr.h), 1.5f, th.range); rrect(R(lr.r() + 4, lr.y + (lr.h - th_) * midiScroll / maxScroll, 3, th_), 1.5f, th.print); }
+    if (btn(ID_CRESET, R(rx, c.y + 270, 120, 26), "RESET KEYS") && confirm("resetkeys")) { cmap.defaultKeys(); saveControl(); toast("DEFAULT KEYS"); }
+    if (btn(ID_CRESET + 1, R(rx + 128, c.y + 270, 120, 26), "RESET MIDI") && confirm("resetmidi")) { cmap.defaultMidi(); saveControl(); midiScroll = 0; toast("DEFAULT MIDI MAPPING"); }
+    if (D()) { font(fPrint, 9.5f, 0.6f); txt(rx, c.y + 314, fit("CC 120/123 = ALL SOUND OFF \xc2\xb7 PROGRAM CHANGE 1-8 = PATTERN", rw), th.print); }
+  }
   void labKits(R c) {
     h2(c.x, c.y + 12, "KITS", "one per material \xc2\xb7 replace all 8 sounds, keep patterns");
     const float cw = (c.w - 3 * 10) / 4, chh = 82;
@@ -1824,10 +2079,10 @@ protected:
       h2(rx, c.y + 12, "STANDALONE");
       para(rx, c.y + 28, c.w - 430,
         "Audio output, sample rate, buffer and MIDI inputs: LAB > AUDIO. PLAY runs the clock at the pattern tempo.\n"
-        "MIDI in: C1\xe2\x80\x93G1 (36\xe2\x80\x93" "43) play tracks 1\xe2\x80\x93" "8 with velocity, C0\xe2\x80\x93G0 (24\xe2\x80\x93" "31) cue patterns P1\xe2\x80\x93P8.\n"
-        "Keys (by position, so AZERTY works the same): Space play/stop \xc2\xb7 hold 1\xe2\x80\x93" "8 and Q\xe2\x80\x93I = steps 1\xe2\x80\x93" "16, turn a knob while holding to lock \xc2\xb7 "
-        "Shift+step = trigless lock \xc2\xb7 Z X C V B N M , = track pads (Shift: mute) \xc2\xb7 hold A (AZERTY: Q) = Control All \xc2\xb7 F = fill \xc2\xb7 "
-        "\xe2\x86\x90 \xe2\x86\x92 page \xc2\xb7 \xe2\x86\x91 \xe2\x86\x93 track \xc2\xb7 Esc = release held steps \xc2\xb7 L = LAB drawer \xc2\xb7 Ctrl+Z = undo.", th.print, 12.5f);
+        "Computer keyboard and MIDI controller: LAB > CONTROL. Every panel button can have a key and MIDI notes / CCs; knobs and faders "
+        "learn CCs (absolute or relative encoders). Default keys, by position (AZERTY works the same): Space play/stop \xc2\xb7 hold 1\xe2\x80\x93" "8 and Q\xe2\x80\x93I = steps "
+        "(turn a knob while holding to lock) \xc2\xb7 Z X C V B N M , = track pads \xc2\xb7 Shift = FUNC \xc2\xb7 A = Control All \xc2\xb7 F = fill \xc2\xb7 arrows = page / track \xc2\xb7 "
+        "Esc = release held steps \xc2\xb7 L = LAB \xc2\xb7 Ctrl+Z = undo. Default MIDI: C1\xe2\x80\x93G1 tracks, C0\xe2\x80\x93G0 patterns.", th.print, 12.5f);
     } else {
       h2(rx, c.y + 12, "IN LIVE");
       para(rx, c.y + 28, c.w - 430,
@@ -1989,46 +2244,40 @@ protected:
     std::lock_guard<std::recursive_mutex> g(core->mtx);
     if (ev.key == kKeyShiftL || ev.key == kKeyShiftR) { shiftDown = ev.press; needRepaint = true; repaint(); return true; }
     if (ev.key == kKeyControlL || ev.key == kKeyControlR || ev.key == kKeyAltL || ev.key == kKeyAltR || ev.key == kKeySuperL || ev.key == kKeySuperR) return false;
-    const int code = physKey(ev);
     // Ctrl+Z by the letter printed on the key (on AZERTY that is not the physical Z position)
     if (ev.mod & (kModifierControl | kModifierSuper)) { if (ev.press && (ev.key == 'z' || ev.key == 'Z' || ev.key == 0x1A)) { undo(); needRepaint = true; repaint(); } return true; }
     if (ev.mod & kModifierAlt) return false;
-    if (ev.press) { if (keysDown.count(code)) return true; keysDown.insert(code); }   // auto-repeat
-    else keysDown.erase(code);
-    const bool shift = (ev.mod & kModifierShift) != 0 || shiftDown;
-    const int si = code >= SC_1 && code <= SC_8 ? code - SC_1 : code >= SC_Q && code <= SC_I ? 8 + code - SC_Q : -1;
-    const int pi = code >= SC_Z && code <= SC_COMMA ? code - SC_Z : -1;
-    if (si >= 0) {
-      if (ev.press) {
-        if (perfMode && !isMaster()) { keyPerf[code] = si; perfDown(si); }
-        else if (shift) toggleTrigless(spage * 16 + si);
-        else { keyHeld[code] = spage * 16 + si; edited = false; schedulePreview(); }
-      } else {
-        auto pf = keyPerf.find(code); if (pf != keyPerf.end()) { perfUp(pf->second); keyPerf.erase(pf); }
-        auto it = keyHeld.find(code);
-        if (it != keyHeld.end()) { const int st = it->second; keyHeld.erase(it); if (!edited) toggleStep(st); schedulePreview(); }
-      }
-    } else if (pi >= 0) {
-      if (ev.press) { if (shift) { S().mutes[pi] = S().mutes[pi] ? 0 : 1; core->sendSimple(Cmd::MUTE, pi, 0, 0, S().mutes[pi]); hostEdit(HP_MUTE0 + pi); } else audition(pi); }
-    } else if (code == SC_SPACE) { if (ev.press) { if (playing) stop(); else play(); } }
-    else if (code == SC_F) { if (ev.press) setFill(true); else if (!fillLatch) setFill(false); }
-    else if (code == SC_L) { if (ev.press) { drawer = !drawer; saveUiState(); applySize(); } }
-    else if (code == SC_A) { allKey = ev.press; }
-    else if (ev.key == kKeyEscape || code == SC_ESC) { if (ev.press) { latched.clear(); schedulePreview(); } }
-    else if (ev.key == kKeyLeft || ev.key == kKeyRight) {
-      if (ev.press) { const int d = ev.key == kKeyRight ? 1 : -1; if (isMaster()) mpage = (mpage + d + 4) % 4; else page = (page + d + 7) % 7; schedulePreview(); }
-    } else if (ev.key == kKeyUp || ev.key == kKeyDown) { if (ev.press) selectTrack((tr + (ev.key == kKeyDown ? 1 : -1) + 9) % 9); }
-    else return false;
+    const int key = ev.key >= 0xE000 ? (int)ev.key : physKey(ev);   // position, or the DGL code for arrows, F-keys...
+    if (keyLearn.k != AC_NONE) { if (ev.press) learnKey(key); needRepaint = true; repaint(); return true; }
+    if (ev.press) { if (keysDown.count(key)) return true; keysDown.insert(key); }   // auto-repeat
+    else keysDown.erase(key);
+    const Action a = cmap.actionForKey(key);
+    if (a.k == AC_NONE) return false;
+    doButton(a, ev.press, key, 110);
     needRepaint = true; repaint(); return true;
   }
-  // window lost focus: release everything held from the keyboard (web: blur)
+  // window lost focus: release everything held from the keyboard (web: blur); controller holds stay
   void uiFocus(bool focus, CrossingMode) override {
     if (focus || !core || !standalone) return;
     std::lock_guard<std::recursive_mutex> g(core->mtx);
-    shiftDown = false; allKey = false; keyHeld.clear(); keysDown.clear();
-    for (auto& k : keyPerf) perfUp(k.second); keyPerf.clear();
+    shiftDown = false; keysDown.clear();
+    for (auto it = keyHeld.begin(); it != keyHeld.end();) { if (it->first < 0x1000000) it = keyHeld.erase(it); else ++it; }
+    for (auto it = keyPerf.begin(); it != keyPerf.end();) { if (it->first < 0x1000000) { perfUp(it->second); it = keyPerf.erase(it); } else ++it; }
+    for (std::set<int>* st : { &funcSrc, &allSrc }) for (auto it = st->begin(); it != st->end();) { if (*it < 0x1000000) it = st->erase(it); else ++it; }
+    if (fillHeld && !fillLatch) setFill(false);
     needRepaint = true;
   }
+#ifdef HARDER_TEST_MIDI_INJECT
+  // test builds: Documents/HARDER/midi-inject.txt, one message per line in hex ("90 24 64"), goes to the audio thread
+  // like MIDI input; the file is removed once read
+  void injectTestMidi() {
+    const std::string p = harderConfigDir() + "midi-inject.txt"; std::string txt;
+    if (!readTextFile(p, txt)) return;
+    removeFile(p);
+    std::istringstream in(txt); std::string line;
+    while (std::getline(in, line)) { unsigned a = 0, b = 0, c = 0; if (std::sscanf(line.c_str(), "%x %x %x", &a, &b, &c) >= 2) { Core::MidiMsg m; m.st = (uint8_t)a; m.d1 = (uint8_t)b; m.d2 = (uint8_t)c; core->injectPush(m); } }
+  }
+#endif
 
   DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HarderUI)
 };

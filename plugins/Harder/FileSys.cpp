@@ -133,6 +133,15 @@ bool copyFile(const std::string& from, const std::string& to) {
   std::string data; if (!readTextFile(from, data)) return false;
   return writeFileAtomic(to, data.data(), data.size());
 }
+std::string keyNameForScancode(int sc) {
+#ifdef _WIN32
+  wchar_t w[64] = { 0 };
+  if (GetKeyNameTextW((LONG)((sc & 0xFF) << 16), w, 64) > 0) return narrow(w);
+  return std::string();
+#else
+  (void)sc; return std::string();
+#endif
+}
 void openInFileManager(const std::string& path) {
 #ifdef _WIN32
   ShellExecuteW(nullptr, L"open", widen(path).c_str(), nullptr, nullptr, SW_SHOWNORMAL);

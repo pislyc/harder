@@ -67,7 +67,7 @@ protected:
   const char* getMaker() const override { return "HARDER"; }
   const char* getHomePage() const override { return "https://github.com/pislyc/harder"; }
   const char* getLicense() const override { return "GPL-3.0-or-later"; }
-  uint32_t getVersion() const override { return d_version(1, 2, 0); }
+  uint32_t getVersion() const override { return d_version(1, 3, 0); }
 
   void initParameter(uint32_t index, Parameter& p) override {
     const HostParamInfo h = hostParamInfo((int)index);
@@ -126,9 +126,16 @@ protected:
   }
   void deactivate() override { eng->panic(); }
 
-  void handleMidi(const MidiEvent& ev) {
-    if (ev.size < 2 || ev.size > 4) return;
-    const uint8_t st = ev.data[0] & 0xF0, d1 = ev.data[1] & 0x7F, d2 = ev.size > 2 ? (ev.data[2] & 0x7F) : 0;
+  void handleMidi(const MidiEvent& ev) { if (ev.size >= 2 && ev.size <= 4) handleMidiBytes(ev.data[0], ev.data[1] & 0x7F, ev.size > 2 ? (ev.data[2] & 0x7F) : 0); }
+  void handleMidiBytes(const uint8_t s0, const uint8_t d1, const uint8_t d2) {
+    const uint8_t st = s0 & 0xF0;
+    if (core.midiMapped.load(std::memory_order_relaxed)) {   // standalone: mapping from LAB > CONTROL
+      if (st == 0x90 && d2 > 0) { const int t = core.padMap[s0 & 15][d1].load(std::memory_order_relaxed); if (t > 0 && t <= NT) eng->audition(t - 1, d2, nullptr); }
+      else if (st == 0xC0) { if (d1 < NPAT) eng->msgCue(d1); return; }
+      else if (st == 0xB0 && (d1 == 120 || d1 == 123)) { eng->panic(); return; }
+      if (st == 0x80 || st == 0x90 || st == 0xB0) { Core::MidiMsg m; m.st = s0; m.d1 = d1; m.d2 = d2; core.midiPush(m); }
+      return;
+    }
     if (st == 0x90 && d2 > 0) {
       if (d1 >= 36 && d1 < 36 + NT) eng->audition(d1 - 36, d2, nullptr);   // C1.. = tracks 1-8 (as the web MIDI export)
       else if (d1 >= 24 && d1 < 24 + NPAT) eng->msgCue(d1 - 24);           // C0..G0 = patterns 1-8
@@ -156,6 +163,9 @@ protected:
     core.hostPlaying.store(hp, std::memory_order_relaxed); core.hostSynced.store(eng->hostSync, std::memory_order_relaxed); core.hostBpm.store(bpm, std::memory_order_relaxed);
 
     float* L = outputs[0]; float* R = outputs[1]; uint32_t pos = 0;
+#ifdef HARDER_TEST_MIDI_INJECT
+    { Core::MidiMsg m; while (core.injectPop(m)) handleMidiBytes(m.st, m.d1 & 0x7F, m.d2 & 0x7F); }
+#endif
     for (uint32_t k = 0; k < nmidi; k++) {
       const uint32_t f = std::min(midi[k].frame, frames);
       if (f > pos) { eng->process(L + pos, R + pos, (int)(f - pos)); pos = f; }

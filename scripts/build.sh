@@ -10,7 +10,7 @@ case "$1" in
     W=/tmp/harder-win-build
     rm -rf $W && mkdir -p $W && (cd "$ROOT" && tar cf - --exclude=./bin --exclude=./build --exclude="./bin-*" --exclude=./dist .) | (cd $W && tar xf -)
     rm -rf $W/dpf/build
-    CXXFLAGS="-DDPF_WIN_SAVE_DEFAULT_NAME" make -C $W/plugins/Harder -j2 WINDOWS=true WINDOWS_ICON_ID=1 $EXTRA CC=x86_64-w64-mingw32-gcc-posix CXX=x86_64-w64-mingw32-g++-posix AR=x86_64-w64-mingw32-ar
+    CXXFLAGS="-DDPF_WIN_SAVE_DEFAULT_NAME $HARDER_CXXFLAGS" make -C $W/plugins/Harder -j2 WINDOWS=true WINDOWS_ICON_ID=1 $EXTRA CC=x86_64-w64-mingw32-gcc-posix CXX=x86_64-w64-mingw32-g++-posix AR=x86_64-w64-mingw32-ar
     rm -rf "$ROOT/bin-windows" && mkdir -p "$ROOT/bin-windows" && cp -r $W/bin/HARDER.vst3 $W/bin/HARDER.exe "$ROOT/bin-windows/" ;;
   *) echo "usage: $0 linux|windows"; exit 1 ;;
 esac

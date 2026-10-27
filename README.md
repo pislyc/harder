@@ -12,6 +12,7 @@ plugins/Harder/   Engine.hpp      DSP engine, line-by-line port of the web engin
                   Sample.hpp      SAMPLE machine data: WAV decoding, stored formats, ids, base64 (not in the web app)
                   Library.hpp     the shared user library (folders = categories, sound / groove files), docs/LIBRARY.md
                   FileSys.cpp/hpp UTF-8 file helpers (wide-character API on Windows)
+                  Control.hpp     standalone keyboard / MIDI-controller mappings (LAB > CONTROL, control.json)
                   HostParams.hpp  parameters exposed to the host
                   HarderShared.hpp lock-free command link UI -> audio, host parameter mirror and ownership
                   HarderPlugin.cpp DPF plugin (audio thread, Live transport sync, MIDI, state, files)
@@ -59,6 +60,8 @@ node tools/export_ref.js EXP && OUT/export_test EXP default kit0 ... poly && nod
 OUT/live_expect project.json pre n out.f32  # expected standalone output after PLAY (live recording test)
 g++ -std=gnu++17 -O1 -fsanitize=address,undefined -pthread tools/sample_test.cpp plugins/Harder/FileSys.cpp OUT/libhmath.a -o OUT/sample_test
 OUT/sample_test <empty dir>              # WAV formats, SAMPLE playback, projects with samples, library, sample lifetime
+g++ -std=gnu++17 tools/control_test.cpp -o OUT/control_test && OUT/control_test   # default keys = the old fixed keys, ids, JSON, relative CC
+HARDER_CXXFLAGS=-DHARDER_TEST_MIDI_INJECT scripts/build.sh windows   # TEST build only: Documents/HARDER/midi-inject.txt (hex lines) is fed in as MIDI input
 ```
 
 `vst3_host_test.cpp` also builds with MinGW (`-static`, against a MinGW libhmath) and runs under Wine against the
@@ -84,3 +87,8 @@ Samples: the audio thread reads sample data through raw pointers in the engine's
 thread keeps every sample the engine may still read alive (`Core::engSmp`, `Core::retired`) until the command that
 replaced it has been consumed by the audio thread (`Link::consumed`); after a queue overflow, everything is kept until
 the full resend has been applied. `tools/sample_test` checks this under ASan with an audio thread swapping samples.
+
+Standalone MIDI: the audio thread plays the notes mapped to pads itself (`Core::padMap`, no UI latency) and passes every
+note and CC to the UI through a lock-free ring (`Core::midiPush` / `midiPop`); the UI runs the mapped actions (the same
+functions the mouse and the keyboard use) and handles MIDI learn. In the plugin the fixed notes (C1-G1 pads, C0-G0
+patterns) apply as before.

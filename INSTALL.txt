@@ -1,4 +1,4 @@
-HARDER 1.2.0 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
+HARDER 1.3.0 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
 =================================================================================================
 
 包里有两样东西 / Two things in this package
@@ -42,9 +42,28 @@ MIDI 输入 MIDI in (LAB → AUDIO)
     要在别的程序里用这个键盘，就在这里取消勾选。接上新设备后点 RESCAN。
     All inputs are opened on the first start, then your ticks are remembered. On Windows one program at a time
     can use a MIDI input: untick it here to use it elsewhere. RESCAN after plugging a device in.
-  - C1–G1（36–43）：触发第 1–8 轨（带力度）；C0–G0（24–31）：预约 pattern 1–8。
 
-电脑键盘 Keyboard（按键盘上的物理位置，所以法语 AZERTY 键盘位置一样）
+键盘和 MIDI 控制器 Keyboard and MIDI controller (LAB → CONTROL，独立程序 standalone only)
+  - 左边按组列出面板上的每个按钮（TRANSPORT / STEPS / PADS / TRACKS / PATTERNS / PAGES / EDIT）和旋钮（KNOBS），
+    每个动作有一个 KEY 和若干 MIDI 映射。设置保存在 文档\HARDER\control.json。
+  - 改键：点某个动作的 KEY，再按一个键（Backspace = 不用键）。键按物理位置记录（AZERTY 照样），
+    显示的是你键盘布局上的字。一个键只能给一个动作；分给新动作时会提示原来的动作。RESET KEYS 恢复默认。
+  - MIDI LEARN：打开后点面板上的任意按钮、旋钮、推子（或列表里某个动作的 MIDI 格），再在控制器上按一下 / 转一下。
+    按钮可以学音符或 CC 按钮（≥64 = 按下，<64 = 松开）；旋钮、推子学 CC。
+  - 旋钮有两种学法（"ENCODERS LEARN AS"）：
+      FOLLOW PANEL：控制器的旋钮 = 面板的第 n 个编码器，换轨、换页后控制新的参数；按住步键（键盘或控制器）
+                    再转 = parameter lock，和 Elektron 机器一样。
+      FIXED PARAM：永远控制学的时候那条轨的那个参数（例如 T1 FREQ、FX 页的 REV DEC），不管当前选的是哪条轨。
+    另外 BPM、SWING、OUT 推子、轨道音量推子也可以学。
+  - 无级旋钮（编码器）：在右边列表里点映射的模式按钮切换 ABS / REL 2C / REL SIGN / REL 64
+    （相对模式：二进制补码 127 = -1；符号位 65 = -1；64 为中心 63 = -1、65 = +1；看控制器说明书选）。
+    按住 FUNC（或 Shift）时相对旋钮变成微调。ABS 时 BPM 是 60–187。
+  - 打击垫的音符由音频线程直接触发（不经过界面，延迟最低），带力度；REC 开着播放时连同力度录进 pattern。
+  - 默认 MIDI：C1–G1（36–43）= 第 1–8 轨打击垫，C0–G0（24–31）= pattern 1–8。另外固定：Program Change 1–8 = pattern，
+    CC 120 / 123 = 全部静音。RESET MIDI 恢复默认；× 删除一条映射。
+  - 插件版里键盘归宿主，MIDI 仍是固定的 C1–G1 / C0–G0（CC 请用 Live 自己的 MIDI 映射，参数都可以自动化）。
+
+电脑键盘 Keyboard 默认 defaults（按键盘上的物理位置，所以法语 AZERTY 键盘位置一样；可在 LAB → CONTROL 改）
   空格 Space ............ 播放 / 停止 play / stop
   按住 1–8 和 Q–I ........ 第 1–16 步（当前页）；按住时拧旋钮 = parameter lock；短按 = 开/关该步
                             hold 1–8 and Q–I = steps 1–16; turn a knob while holding to lock; tap = toggle
@@ -160,6 +179,9 @@ SAMPLE 机器 SAMPLE machine（第 10 种机器）
   - 操作与网页版相同：点 step 开关；按住 step 半秒锁定后拧旋钮 = parameter lock；
     FUNC/Shift+点 step = trigless lock；双击旋钮复位；Shift 拖动 = 微调；滚轮也可调。
 
+1.3.0 新增 New in 1.3.0（独立程序 standalone）
+  - LAB → CONTROL：电脑键盘改键；MIDI LEARN 把控制器的按键、打击垫、旋钮、推子映射到面板上的任何按钮和旋钮
+    （旋钮跟随面板或固定参数；支持相对式编码器）。Keyboard remapping and MIDI learn for every panel control.
 1.2.0 新增 New in 1.2.0
   - SAMPLE 机器：在轨道上播放 WAV（采样内嵌在工程里）。SAMPLE machine: WAV playback, samples stored in the project.
   - 用户库：音色和 groove 的自定义分类（文件夹即分类）、保存、导入、移动、改名、删除；
