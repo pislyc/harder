@@ -73,6 +73,7 @@ inline std::vector<uint8_t> midiFile(const std::vector<MidiEv>& events, double b
 }
 
 inline void loadEngine(Engine& E, const Project& S, const double* master) {
+  for (int i = 0; i < NSLOT; i++) E.setSample(i, S.smp[i].get());   // S keeps the data alive for the render
   for (int t = 0; t < NT; t++) E.loadTrack(t, S.tracks[t].m, S.tracks[t].p);
   E.loadMaster(master);
   for (int i = 0; i < NPAT; i++) E.setPattern(i, S.patterns[i]);

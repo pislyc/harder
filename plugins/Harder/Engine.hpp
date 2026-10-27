@@ -10,6 +10,7 @@
 //  * NaN / blow-up guards reset the offending voice or the FX chain instead of latching silence
 #pragma once
 #include "Params.hpp"
+#include "Sample.hpp"
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -280,43 +281,93 @@ struct MDuo {
   bool alive() const { return ae > 1e-4; }
 };
 
+// Sample playback (not in the web engine). Plays slot SMP of the engine's sample table from STRT to END, forward or
+// reversed, once or looping from LOOP; TUNE/FINE, the trig NOTE and pitch LFO change the rate. 4-point Hermite
+// interpolation at the sample's own rate. Short fades only where a cut would click: 32 samples in when playback does
+// not start at the sample's first frame, 64 samples out before a one-shot END that is not the sample's end.
+struct MSmp {
+  int slot = 0, mode = 0; bool run = false, fadeOut = false;
+  double pos = 0, inc = 1, a = 0, b = 0, lp = 0, lev = 1; int fadeIn = 0, fadeN = 0;
+  const SampleData* cur(const SampleData* const* tab) const { return tab ? tab[slot] : nullptr; }
+  void ctl(const double* e, double pm, double sr, const SampleData* const* tab) {
+    slot = (int)clampd(jsround(e[2]), 0, NSLOT - 1); mode = (int)clampd(jsround(e[5]), 0, 3);
+    lev = mpow(clampd(e[7], 0, 127) / 100, 2);
+    const SampleData* s = cur(tab); if (!s || s->len < 2) { a = b = lp = 0; return; }
+    const double n = s->len;
+    a = std::floor(clampd(e[3], 0, 127) / 127 * (n - 1)); b = std::max(a + 1, std::floor(clampd(e[4], 0, 127) / 127 * n));
+    const double lf = clampd(e[6], 0, 127) / 127;
+    lp = (mode == 3) ? b - lf * (b - a) : a + lf * (b - a);
+    inc = s->rate / sr * pm * exp2j((e[0] + e[1] / 64) / 12);
+    if (!(inc > 0) || inc > 64) inc = inc > 64 ? 64 : 1;
+    fadeOut = (mode == 0 || mode == 1) && (mode == 0 ? b < n : a > 0);
+  }
+  void trig(const SampleData* const* tab) {
+    const SampleData* s = cur(tab); run = s && s->len >= 2 && b > a;
+    pos = (mode == 1 || mode == 3) ? b - 1 : a;
+    fadeN = (mode == 1 || mode == 3) ? (b < (s ? s->len : 0) ? 32 : 0) : (a > 0 ? 32 : 0); fadeIn = 0;
+  }
+  static inline double at(const float* x, int n, int i) { return (i < 0 || i >= n) ? 0.0 : (double)x[i]; }
+  double tick(const SampleData* const* tab) {
+    if (!run) return 0;
+    const SampleData* s = cur(tab); if (!s || s->len < 2) { run = false; return 0; }
+    const float* x = s->d.data(); const int n = s->len;
+    const int i = (int)std::floor(pos); const double f = pos - i;
+    const double y0 = at(x, n, i - 1), y1 = at(x, n, i), y2 = at(x, n, i + 1), y3 = at(x, n, i + 2);
+    const double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+    double y = ((c3 * f + c2) * f + c1) * f + y1;
+    if (fadeIn < fadeN) { y *= (fadeIn + 1.0) / (fadeN + 1.0); fadeIn++; }
+    const bool rev = mode == 1 || mode == 3;
+    if (fadeOut) { const double left = (rev ? pos - a : b - pos) / inc; if (left < 64) y *= std::max(0.0, left / 64); }
+    if (!rev) {
+      pos += inc;
+      if (pos >= b) { if (mode == 2) { const double L = std::max(1.0, b - lp); pos = lp + std::fmod(pos - b, L); } else run = false; }
+    } else {
+      pos -= inc;
+      if (pos < a) { if (mode == 3) { const double L = std::max(1.0, lp - a); pos = lp - std::fmod(a - pos, L); if (pos >= b) pos = b - 1; } else run = false; }
+    }
+    return y * lev;
+  }
+  bool alive() const { return run; }
+};
+
 struct Machine {
   int type = M_SUB;
-  MSub sub; MFmk fmk; MSnr snr; MClp clp; MMtl mtl; MMdl mdl; MZap zap; MGlt glt; MDuo duo;
+  const SampleData* const* smpTab = nullptr;   // the owning engine's sample table (kept across reset)
+  MSub sub; MFmk fmk; MSnr snr; MClp clp; MMtl mtl; MMdl mdl; MZap zap; MGlt glt; MDuo duo; MSmp smp;
   void reset(int t) {
     type = t;
     switch (t) {
       case M_SUB: sub = MSub(); break; case M_FMK: fmk = MFmk(); break; case M_SNR: snr = MSnr(); break;
       case M_CLP: clp = MClp(); break; case M_MTL: mtl = MMtl(); break; case M_MDL: mdl = MMdl(); break;
-      case M_ZAP: zap = MZap(); break; case M_GLT: glt = MGlt(); break; default: duo = MDuo(); break;
+      case M_ZAP: zap = MZap(); break; case M_GLT: glt = MGlt(); break; case M_SMP: smp = MSmp(); break; default: duo = MDuo(); break;
     }
   }
   void trig(double sr, Rng& rnd) {
     switch (type) {
       case M_SUB: sub.trig(); break; case M_FMK: fmk.trig(); break; case M_SNR: snr.trig(); break;
       case M_CLP: clp.trig(sr, rnd); break; case M_MTL: mtl.trig(); break; case M_MDL: mdl.trig(); break;
-      case M_ZAP: zap.trig(); break; case M_GLT: glt.trig(); break; default: duo.trig(); break;
+      case M_ZAP: zap.trig(); break; case M_GLT: glt.trig(); break; case M_SMP: smp.trig(smpTab); break; default: duo.trig(); break;
     }
   }
   void ctl(const double* e, double pm, double sr) {
     switch (type) {
       case M_SUB: sub.ctl(e, pm, sr); break; case M_FMK: fmk.ctl(e, pm, sr); break; case M_SNR: snr.ctl(e, pm, sr); break;
       case M_CLP: clp.ctl(e, pm, sr); break; case M_MTL: mtl.ctl(e, pm, sr); break; case M_MDL: mdl.ctl(e, pm, sr); break;
-      case M_ZAP: zap.ctl(e, pm, sr); break; case M_GLT: glt.ctl(e, pm, sr); break; default: duo.ctl(e, pm, sr); break;
+      case M_ZAP: zap.ctl(e, pm, sr); break; case M_GLT: glt.ctl(e, pm, sr); break; case M_SMP: smp.ctl(e, pm, sr, smpTab); break; default: duo.ctl(e, pm, sr); break;
     }
   }
   double tick(double sr, Rng& rnd) {
     switch (type) {
       case M_SUB: return sub.tick(sr, rnd); case M_FMK: return fmk.tick(sr); case M_SNR: return snr.tick(sr, rnd);
       case M_CLP: return clp.tick(sr, rnd); case M_MTL: return mtl.tick(sr, rnd); case M_MDL: return mdl.tick(rnd);
-      case M_ZAP: return zap.tick(sr); case M_GLT: return glt.tick(sr, rnd); default: return duo.tick(sr, rnd);
+      case M_ZAP: return zap.tick(sr); case M_GLT: return glt.tick(sr, rnd); case M_SMP: return smp.tick(smpTab); default: return duo.tick(sr, rnd);
     }
   }
   bool alive() const {
     switch (type) {
       case M_SUB: return sub.alive(); case M_FMK: return fmk.alive(); case M_SNR: return snr.alive();
       case M_CLP: return clp.alive(); case M_MTL: return mtl.alive(); case M_MDL: return mdl.alive();
-      case M_ZAP: return zap.alive(); case M_GLT: return glt.alive(); default: return duo.alive();
+      case M_ZAP: return zap.alive(); case M_GLT: return glt.alive(); case M_SMP: return smp.alive(); default: return duo.alive();
     }
   }
 };
@@ -468,6 +519,7 @@ struct Track { int m = M_SUB; double p[NP]; };
 struct Engine {
   double sr = 48000; int64_t time = 0; bool playing = false; double bpm = 125, swing = 50, stepLen = 0;
   Track tracks[NT]; double master[NM], mEff[NM]; uint8_t mLock[NM];
+  const SampleData* smp[NSLOT] = { nullptr };   // sample slots; the main thread keeps the data alive (Core::sendSamples)
   Pattern* patterns = nullptr;   // NPAT, owned
   int cur = 0, cue = -1; uint8_t mutes[NT]; bool fill = false; int solo = -1;
   Voice voices[NT];
@@ -513,7 +565,7 @@ struct Engine {
     if (!patterns) patterns = new Pattern[NPAT];
     if (!pool) pool = new Ev[POOL];
     nFree = 0; for (int i = POOL - 1; i >= 0; i--) freeList[nFree++] = (uint16_t)i; nHeap = 0;
-    for (int i = 0; i < NT; i++) { voices[i].init(sr, i); voices[i].setMachine(M_SUB); tracks[i].m = M_SUB; defaultTrackParams(M_SUB, tracks[i].p); mutes[i] = 0; rolls[i].on = false; }
+    for (int i = 0; i < NT; i++) { voices[i].mach.smpTab = smp; voices[i].init(sr, i); voices[i].setMachine(M_SUB); tracks[i].m = M_SUB; defaultTrackParams(M_SUB, tracks[i].p); mutes[i] = 0; rolls[i].on = false; }
     defaultMaster(master); std::memcpy(mEff, master, sizeof master); std::memset(mLock, 0, sizeof mLock);
     cur = 0; cue = -1; fill = false; solo = -1; rnd.seed(12345);
     for (int t = 0; t < NTR; t++) { tNext[t] = tSched[t] = 0; tpos[t] = tloop[t] = tcount[t] = 0; tReset[t] = 0; lastCond[t] = 0; }
@@ -723,6 +775,7 @@ struct Engine {
 
   // ---------- public API (mirrors E.msg) ----------
   void normPattern(Pattern& P) { P.mlen = std::max(1, std::min(64, P.mlen)); for (int t = 0; t < NTR; t++) { P.len[t] = std::max(1, std::min(64, P.len[t])); if (P.scl[t] < 0 || P.scl[t] > 6) P.scl[t] = 4; } }
+  void setSample(int slot, const SampleData* s) { if (slot >= 0 && slot < NSLOT) smp[slot] = s; }
   void loadTrack(int tr, int m, const double* p) { tracks[tr].m = m; std::memcpy(tracks[tr].p, p, sizeof(double) * NP); voices[tr].setMachine(m); }
   void loadMaster(const double* m) { std::memcpy(master, m, sizeof master); std::memcpy(mEff, master, sizeof master); std::memset(mLock, 0, sizeof mLock); }
   void loadDone(int cur_, double bpm_, double swing_, const uint8_t* mutes_) {

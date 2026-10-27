@@ -15,7 +15,7 @@ constexpr int NT = 8;       // sound tracks
 constexpr int NTR = 9;      // tracks incl. FX track
 constexpr int NSTEP = 64;
 constexpr int NPAT = 8;
-constexpr int NMACH = 9;
+constexpr int NMACH = 10;
 
 // all transcendental math in the DSP goes through a private copy of musl's libm (hmath/): the speed and the
 // results then do not depend on the host C runtime (msvcrt's exp/pow are 5-10x slower than these).
@@ -39,9 +39,9 @@ inline double mhypot(double x, double y) { return std::hypot(x, y); }
 inline double expm(double v, double lo, double hi) { return lo * mpow(hi / lo, v / 127.0); }
 inline double jsround(double x) { return std::floor(x + 0.5); }   // Math.round
 
-enum MachId { M_SUB, M_FMK, M_SNR, M_CLP, M_MTL, M_MDL, M_ZAP, M_GLT, M_DUO };
-static const char* const MACH_IDS[NMACH] = { "SUB", "FMK", "SNR", "CLP", "MTL", "MDL", "ZAP", "GLT", "DUO" };
-static const char* const MACH_NAMES[NMACH] = { "BD SUB", "BD FM", "SD TONE", "CP GRID", "HH METAL", "PT MODAL", "FX ZAP", "NZ GLITCH", "PT DUO" };
+enum MachId { M_SUB, M_FMK, M_SNR, M_CLP, M_MTL, M_MDL, M_ZAP, M_GLT, M_DUO, M_SMP };
+static const char* const MACH_IDS[NMACH] = { "SUB", "FMK", "SNR", "CLP", "MTL", "MDL", "ZAP", "GLT", "DUO", "SMP" };
+static const char* const MACH_NAMES[NMACH] = { "BD SUB", "BD FM", "SD TONE", "CP GRID", "HH METAL", "PT MODAL", "FX ZAP", "NZ GLITCH", "PT DUO", "SAMPLE" };
 inline int machineIndex(const char* id) { for (int i = 0; i < NMACH; i++) if (!std::strcmp(id, MACH_IDS[i])) return i; return -1; }
 
 static const char* const COND[] = { "\xe2\x80\x94", "FILL", "!FIL", "PRE", "!PRE", "NEI", "!NEI", "1ST", "!1ST", "1:2", "2:2", "1:3", "2:3", "3:3", "1:4", "2:4", "3:4", "4:4" };
@@ -77,6 +77,7 @@ enum FmtId {
   FM_FMK_RATI, FM_SNR_SPRD, FM_CLP_CNT, FM_MTL_SPRD, FM_MDL_MATR, FM_ZAP_SWEP, FM_ZAP_RATI, FM_GLT_SWEP, FM_DUO_RATI, FM_DUO_WAVE,
   FM_TYPE, FM_T0, FM_DECINF, FM_PAN, FM_BITS, FM_SRR, FM_CTUN, FM_LFOSPD, FM_DEG, FM_PCTRAW, FM_MICR, FM_RLEN,
   FM_DJF, FM_SHAP, FM_XOVR, FM_PREMS,
+  FM_SEMIB, FM_CENT, FM_SLOT, FM_PCT1,
 };
 
 struct PDef {
@@ -140,6 +141,11 @@ struct Tables {
     m[M_DUO][0] = P("TUNE", 0, 127, 76, FM_HZ, 40, 4000); m[M_DUO][1] = P("RATI", 0, 127, 21, FM_DUO_RATI); m[M_DUO][2] = P("WAVE", 0, 127, 127, FM_DUO_WAVE);
     m[M_DUO][3] = P("DEC", 0, 127, 50, FM_T, 0.01, 3); m[M_DUO][4] = P("BPF", 0, 127, 88, FM_HZ, 200, 12000); m[M_DUO][5] = P("RESO", 0, 127, 34, FM_PCT);
     m[M_DUO][6] = P("SWEP", 0, 127, 0, FM_SEMI, 24); m[M_DUO][7] = P("CLIK", 0, 127, 20, FM_PCT);
+    // SMP (sample playback; not in the web version)
+    static const char* const SMODE[] = { "FWD", "REV", "LOOP", "RLOOP" };
+    m[M_SMP][0] = P("TUNE", -24, 24, 0, FM_SEMIB); m[M_SMP][1] = P("FINE", -64, 63, 0, FM_CENT); m[M_SMP][2] = P("SMP", 0, 63, 0, FM_SLOT);
+    m[M_SMP][3] = P("STRT", 0, 127, 0, FM_PCT1); m[M_SMP][4] = P("END", 0, 127, 127, FM_PCT1); m[M_SMP][5] = PL("MODE", 0, 3, 0, SMODE, 4);
+    m[M_SMP][6] = P("LOOP", 0, 127, 0, FM_PCT1); m[M_SMP][7] = P("LEV", 0, 127, 100, FM_RAW);
 
     PDef* c = common;
     static const char* const CHOK[] = { "OFF", "A", "B", "C", "D" };
@@ -245,6 +251,10 @@ inline std::string formatValue(const PDef& d, double v) {
     case FM_SHAP: return v < 43 ? "HOLD" : v < 86 ? "LIN" : "PUMP";
     case FM_XOVR: return v >= 127 ? "FULL" : fHz(expm(v, 40, 800));
     case FM_PREMS: return istr(v / 127 * 200) + "ms";
+    case FM_SEMIB: return (v > 0 ? "+" : "") + istr(v) + "st";
+    case FM_CENT: { const int c = (int)jsround(v / 64 * 100); return (c > 0 ? "+" : "") + std::to_string(c) + "c"; }
+    case FM_SLOT: { char b[16]; std::snprintf(b, sizeof b, "S%02d", (int)jsround(v) + 1); return b; }
+    case FM_PCT1: return toFixed(v / 127 * 100, 1) + "%";
   }
   return istr(v);
 }

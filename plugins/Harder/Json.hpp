@@ -32,6 +32,7 @@ struct JVal {
   // builders
   static JVal Num(double v) { JVal j; j.kind = NUM; j.n = v; return j; }
   static JVal Str(const std::string& v) { JVal j; j.kind = STR; j.s = v; return j; }
+  static JVal Str(std::string&& v) { JVal j; j.kind = STR; j.s = std::move(v); return j; }
   static JVal Bool(bool v) { JVal j; j.kind = BOOL; j.b = v; return j; }
   static JVal Arr() { JVal j; j.kind = ARR; return j; }
   static JVal Obj() { JVal j; j.kind = OBJ; return j; }
@@ -61,7 +62,7 @@ struct JParser {
           case 'u': { unsigned u; if (!hex4(u)) return false; if (u >= 0xD800 && u < 0xDC00 && end - p >= 6 && p[0] == '\\' && p[1] == 'u') { p += 2; unsigned l; if (!hex4(l)) return false; u = 0x10000 + ((u - 0xD800) << 10) + (l - 0xDC00); } utf8(out, u); break; }
           default: out += c;
         }
-      } else out += *p++;
+      } else { const char* q = p; while (q < end && *q != '"' && *q != '\\') q++; out.append(p, q); p = q; }   // plain run at once (embedded samples are MB long)
     }
     if (p >= end) return false; p++; return true;
   }
@@ -109,6 +110,18 @@ inline void jsonNum(std::string& o, double v) {
 }
 inline void jsonStr(std::string& o, const std::string& s) {
   o += '"';
+  if (s.size() > 4096) {   // long strings (base64 sample data): copy plain runs at once
+    size_t i = 0;
+    while (i < s.size()) {
+      size_t j = i; while (j < s.size() && (unsigned char)s[j] >= 0x20 && s[j] != '"' && s[j] != '\\') j++;
+      o.append(s, i, j - i); if (j >= s.size()) break;
+      const unsigned char c = (unsigned char)s[j];
+      if (c == '"') o += "\\\""; else if (c == '\\') o += "\\\\"; else if (c == '\n') o += "\\n"; else if (c == '\r') o += "\\r"; else if (c == '\t') o += "\\t";
+      else { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); o += b; }
+      i = j + 1;
+    }
+    o += '"'; return;
+  }
   for (unsigned char c : s) {
     if (c == '"') o += "\\\""; else if (c == '\\') o += "\\\\"; else if (c == '\n') o += "\\n"; else if (c == '\r') o += "\\r"; else if (c == '\t') o += "\\t";
     else if (c < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); o += b; } else o += (char)c;

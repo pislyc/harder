@@ -209,6 +209,40 @@ int main(int argc, char** argv) {
     std::printf("  automation T1 Volume, points 20 then 45 at offset 0: project %.2f, host shows %.2f\n", now->tracks[tr].p[21], ctlPlain(idx));
     CHECK(std::fabs(now->tracks[tr].p[21] - 45) < 1e-3 && std::fabs(ctlPlain(idx) - 45) < 1e-3, "automation / last point"); }
 
+  // 6: SAMPLE machine in the host state: samples embedded in the project survive set_state / get_state bit for bit
+  //    (also a 20 s sample: a 4 MB state chunk), and the plugin plays them like the reference engine
+  {
+    auto mk = [](const char* name, int n, int rate, int fmt, uint32_t seed) {
+      std::shared_ptr<SampleData> s(new SampleData()); s->name = name; s->rate = rate; s->fmt = fmt; s->d.resize(n); uint32_t x = seed;
+      for (int i = 0; i < n; i++) { x = x * 1664525u + 1013904223u; s->d[i] = (float)(0.6 * std::sin(i * 0.02) * std::exp(-i / (0.2 * rate)) + ((x >> 8) / 16777216.0 - 0.5) * 0.2); }
+      finishSample(*s); return SampleRef(s); };
+    std::unique_ptr<Project> Q(new Project()); *Q = *P;
+    Q->smp[3] = mk("kick 24", 30000, 44100, SF_S24, 1); Q->smp[40] = mk("pad f32", 20 * 48000, 48000, SF_F32, 2);
+    Q->tracks[0].m = M_SMP; defaultTrackParams(M_SMP, Q->tracks[0].p); Q->tracks[0].p[2] = 3; Q->tracks[0].p[0] = 5;
+    Q->tracks[1].m = M_SMP; defaultTrackParams(M_SMP, Q->tracks[1].p); Q->tracks[1].p[2] = 40; Q->tracks[1].p[5] = 2;
+    const std::string js = projectToString(*Q);
+    CHECK(setStateJson(js) == V3_OK, "set_state with samples");
+    for (int k = 0; k < 4; k++) process(nullptr);
+    std::unique_ptr<Project> back(new Project()); const bool ok = getProject(*back);
+    CHECK(ok && back->smp[3] && back->smp[40] && back->smp[3]->id == Q->smp[3]->id && back->smp[40]->id == Q->smp[40]->id
+          && back->smp[3]->d == Q->smp[3]->d && back->smp[40]->d == Q->smp[40]->d, "samples not returned by get_state");
+    CHECK(ok && projectToString(*back) == js, "get_state differs from the state that was set (%zu bytes)", js.size());
+    // play track 1 and 2 (C1, C#1) and compare with the reference engine given the same project
+    for (int k = 0; k < 120; k++) process(nullptr);   // let earlier sounds end
+    // the reference with the same history as the plugin (W followed every note so far), given the same project
+    Engine* W2 = W.get();
+    { std::vector<float> wl(B), wr(B); for (int k = 0; k < 2; k++) W2->process(wl.data(), wr.data(), B); }   // the plugin ran 2 blocks in the automation test
+    for (int i = 0; i < NSLOT; i++) W2->setSample(i, Q->smp[i].get()); loadW(*Q);
+    { std::vector<float> wl(B), wr(B); for (int k = 0; k < 124; k++) W2->process(wl.data(), wr.data(), B); }
+    for (int pitch : { 36, 37 }) { v3_event e; std::memset(&e, 0, sizeof e); e.type = V3_EVENT_NOTE_ON; e.note_on.pitch = (int16_t)pitch; e.note_on.velocity = 110 / 127.f; e.note_on.note_id = -1; ev.ev.push_back(e); }
+    std::vector<float> got; for (int k = 0; k < 400; k++) process(&got);
+    W2->audition(0, 110, nullptr); W2->audition(1, 110, nullptr);
+    std::vector<float> ref; { std::vector<float> wl(B), wr(B); for (int k = 0; k < 400; k++) { W2->process(wl.data(), wr.data(), B); ref.insert(ref.end(), wl.begin(), wl.end()); } }
+    double md = 0, pk = 0; for (size_t i = 0; i < got.size() && i < ref.size(); i++) { md = std::max(md, (double)std::fabs(got[i] - ref[i])); pk = std::max(pk, (double)std::fabs(ref[i])); }
+    std::printf("  SAMPLE tracks via the host state (%.1f MB): samples returned bit-exact %s; sound vs reference max diff %.2g (peak %.2f)\n", js.size() / 1048576.0, ok ? "yes" : "no", md, pk);
+    CHECK(pk > 0.05 && md < 1e-6, "SAMPLE playback differs from the reference engine (%.3g)", md);
+  }
+
   v3_cpp_obj(proc)->set_processing(proc, 0); v3_cpp_obj(comp)->set_active(comp, 0);
   std::printf("%s (%d failures)\n", fails ? "VST3 HOST TEST FAILED" : "VST3 HOST TEST PASSED", fails);
   return fails ? 1 : 0;

@@ -1,10 +1,11 @@
 #!/bin/bash
 # Packages the Windows plugin and the source.
 set -e
-ROOT=$(cd "$(dirname "$0")/.." && pwd); V=1.1.1; D=$ROOT/dist
+ROOT=$(cd "$(dirname "$0")/.." && pwd); V=1.2.0; D=$ROOT/dist
 rm -rf $D && mkdir -p $D/HARDER-$V-win64/licenses
 cp -r $ROOT/bin-windows/HARDER.vst3 $ROOT/bin-windows/HARDER.exe $D/HARDER-$V-win64/
 cp $ROOT/INSTALL.txt $ROOT/VERIFY.md $D/HARDER-$V-win64/
+mkdir -p $D/HARDER-$V-win64/docs && cp $ROOT/docs/LIBRARY.md $D/HARDER-$V-win64/docs/
 cp $ROOT/LICENSE $D/HARDER-$V-win64/LICENSE.txt
 cp $ROOT/fonts/OFL-*.txt $D/HARDER-$V-win64/licenses/
 cp $ROOT/dpf/LICENSE $D/HARDER-$V-win64/licenses/DPF-LICENSE.txt

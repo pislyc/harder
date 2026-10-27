@@ -1,6 +1,31 @@
-# HARDER — verification report (1.1.1: standalone program + VST3 plugin)
+# HARDER — verification report (1.2.0: standalone program + VST3 plugin)
 
 All numbers below were measured in the build environment (Linux x86-64 VM, 2 cores; Windows binaries run under Wine 9).
+
+## C. New in 1.2.0: SAMPLE machine and the user library
+
+`tools/sample_test.cpp` (139 checks), built natively with AddressSanitizer + UBSan and with MinGW for Windows (run
+under Wine): all pass on both.
+
+| check | result |
+|---|---|
+| WAV decoding: 8/16/24/32-bit PCM, float 32/64, extensible, stereo, odd chunk padding; garbage, MP3-in-WAV refused; 61 s file | values within the source's quantization, mono mix exact; stored form and `encodeWav` round trip bit-exact; cut at 60 s |
+| SAMPLE playback vs a direct computation (DC blocker included): unity, +12 st, -12 st (Hermite), 44.1 kHz file at 48 kHz, reverse, loop, START/END with the 32/64-sample fades, LEV 50 | all within 1e-6 (unity, +12 st, reverse: the sample values exactly) |
+| empty slot / end of sample | silent, voice released |
+| project with samples in 3 formats (s16 / s24 / f32) | save -> load -> save identical; ids and data bit-exact; without samples the project file has no `samples` key (web-compatible, `core_test` web round trip unchanged); undo snapshots carry ids only (29 KB instead of 51 KB for the test project; the difference grows with the samples) and resolve from the session cache |
+| library: save SAMPLE / other sounds, Chinese names, INBOX, the sound's own WAV hidden, move + rename (WAV follows, reference rewritten), trash, trash folder, grooves, a sound file written by another program | all as specified in docs/LIBRARY.md; the documented Python example produces a sound HARDER loads |
+| sample lifetime: audio thread draining + processing while the main thread replaces samples 6000 times, forces queue overflows, resends | no use-after-free under ASan in 10 runs. The test is sensitive: freeing retired samples at once, or dropping the overflow protection, makes ASan report a heap-use-after-free in `MSmp::ctl` (1 of 3 runs for the overflow case) |
+| real binaries in the VST3 host test (Linux .so, Windows DLL under Wine): project with two SAMPLE tracks (incl. a 20 s float sample: 5 MB state) through set_state / get_state, notes on C1 and C#1 | samples returned bit-exact, state string identical; output vs reference engine max diff 0 |
+| Windows exe under Wine, real mouse and keyboard: IMPORT WAV (open dialog), + NEW category, drag an item onto a category, SAVE SOUND (JSON + WAV pair), Chinese category / file names written from outside (rendered with a CJK fallback font), auto-load of a WAV renamed into INBOX, groove SAVE PATTERN / drag / RENAME / DELETE (two presses, to Library/Trash) / category rename by double-click, CLEAN UP SLOTS | all as intended; auto-load picked the new file within 1.5 s; screenshots in the release notes |
+| Windows exe: two SAMPLE tracks + six synth tracks played (Space), recorded from the audio device, compared with the engine rendering the autosaved project | from a cold start: identical (difference 0) until 2.5 s. Then single hits differ by exactly one sample: events whose exact time falls on an integer sample (step 22 at 132 BPM = 120000.000, step 29 + swing = 158400.000) round either way depending on the engine time at PLAY (`tools` origin scan: the same project fires such a hit at 38400 or 38401 depending on that time). This is the sequencer's timebase (the same code as the web engine), not the SAMPLE machine. After auditions, a -115 dB residue of earlier sounds in the FX buffers is added for 0.5 s. |
+| autosave restore | restarting the exe brings back both samples, the slots and the library state |
+| CPU: 8 looping, pitched, filtered SAMPLE voices with 1/32 retrigs on every step, 64-sample blocks | 3 % of a core on average; p99.9 110-220 us, worst 209-257 us of the 1333 us budget in clean runs (rare outliers are VM scheduling, as for the synth stress test) |
+| engine equivalence with the web app (36 scenarios, 44.1/48/96 kHz), presets, preview, export, generator, host echo, sync | unchanged: max 5.96e-8, 0/111, 0/222, kit byte-identical / loop 201 of 39.9M samples 1 LSB, 0 mismatches, 0/111, drift 0 |
+
+Found and fixed while building it: the command queue counted dropped commands, so after an overflow retired samples
+were never freed, and a sample replaced by a dropped command could have been freed while the engine still played it.
+Not verified: typing Chinese into the name field (Wine does not pass xdotool's Unicode keys); on Windows the field
+takes WM_CHAR text, in a host the plugin gets only ASCII (DPF's VST3 key forwarding).
 
 ## B. New in 1.1.1: level strip
 
@@ -167,7 +192,7 @@ Host sync: 60 s of tempo automation between 80 and 160 BPM with loop jumps: the 
 0.37 beats after it, with a 13-step polymeter track and tracks at 1/4x and 3/2x speed: the trigs (track, time,
 velocity, conditional trigs included) are the same as when the song plays through from the start, within 1 sample.
 
-## 3. Plugin validation (1.1.1 binaries)
+## 3. Plugin validation (1.2.0 binaries)
 
 - pluginval, strictness 10, Linux build, full suite including editor and fuzz tests: SUCCESS
 - pluginval, strictness 10, Windows build under Wine, editor tests skipped (under Wine the editor test times out for

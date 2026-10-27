@@ -41,7 +41,7 @@ public:
     defaultProject(*core.S);
     if (harderIsStandalone()) {   // standalone: continue where the last session ended
       std::string s; std::unique_ptr<Project> p(new Project());
-      if (readTextFile(harderConfigDir() + "autosave.json", s) && projectFromString(s, *p)) *core.S = *p;
+      if (readTextFile(harderConfigDir() + "autosave.json", s) && projectFromString(s, *p, &core.cache)) *core.S = *p;
       if (readTextFile(harderConfigDir() + "ui.json", s)) core.uiState = s;
     }
     core.applyUiStateDsp();
@@ -63,11 +63,11 @@ public:
 
 protected:
   const char* getLabel() const override { return "HARDER"; }
-  const char* getDescription() const override { return "Synth percussion & groove box: eight synth-drum machines, Elektron-style sequencer with parameter and conditional locks."; }
+  const char* getDescription() const override { return "Synth percussion & groove box: nine synth-drum machines and a sample player, Elektron-style sequencer with parameter and conditional locks."; }
   const char* getMaker() const override { return "HARDER"; }
-  const char* getHomePage() const override { return "https://claude.ai"; }
-  const char* getLicense() const override { return "Proprietary"; }
-  uint32_t getVersion() const override { return d_version(1, 1, 1); }
+  const char* getHomePage() const override { return "https://github.com/pislyc/harder"; }
+  const char* getLicense() const override { return "GPL-3.0-or-later"; }
+  uint32_t getVersion() const override { return d_version(1, 2, 0); }
 
   void initParameter(uint32_t index, Parameter& p) override {
     const HostParamInfo h = hostParamInfo((int)index);
@@ -105,7 +105,7 @@ protected:
     if (!std::strcmp(key, "ui")) { std::lock_guard<std::recursive_mutex> g(core.mtx); core.uiState = value ? value : ""; core.applyUiStateDsp(); core.modelSeq++; return; }
     if (std::strcmp(key, "project") || !value || !*value) return;
     std::unique_ptr<Project> p(new Project());
-    if (!projectFromString(value, *p)) return;   // keep the current project if the data is not a HARDER project
+    if (!projectFromString(value, *p, &core.cache)) return;   // keep the current project if the data is not a HARDER project
     std::lock_guard<std::recursive_mutex> g(core.mtx);
     *core.S = *p;
     core.refreshHost(nullptr);
@@ -190,45 +190,6 @@ namespace hd {
 Core* harderCore(void* p) { return p ? &static_cast<DISTRHO_NAMESPACE::HarderPlugin*>(p)->core : nullptr; }
 bool harderIsStandalone() { return std::strstr(DISTRHO_NAMESPACE::getPluginFormatName(), "Standalone") != nullptr; }
 std::string harderConfigDir() { const char* d = DISTRHO_NAMESPACE::getSpecialDir(DISTRHO_NAMESPACE::kSpecialDirDocumentsForPlugin); return d ? d : ""; }
-#ifdef _WIN32
-static std::wstring widen(const std::string& s) {
-  const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0); if (n <= 0) return std::wstring();
-  std::wstring w((size_t)n, L'\0'); MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n); w.resize((size_t)n - 1); return w;
-}
-static FILE* openUtf8(const std::string& p, const wchar_t* mode) { return _wfopen(widen(p).c_str(), mode); }
-#else
-static FILE* openUtf8(const std::string& p, const char* mode) { return std::fopen(p.c_str(), mode); }
-#endif
-bool readTextFile(const std::string& path, std::string& out) {
-#ifdef _WIN32
-  FILE* f = openUtf8(path, L"rb");
-#else
-  FILE* f = openUtf8(path, "rb");
-#endif
-  if (!f) return false;
-  out.clear(); std::vector<char> buf(65536); size_t n; while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) out.append(buf.data(), n);
-  std::fclose(f); return true;
-}
-bool writeFileAtomic(const std::string& path, const void* data, size_t size) {
-  const std::string tmp = path + ".tmp";
-#ifdef _WIN32
-  FILE* f = openUtf8(tmp, L"wb");
-#else
-  FILE* f = openUtf8(tmp, "wb");
-#endif
-  if (!f) return false;
-  const bool ok = std::fwrite(data, 1, size, f) == size;
-#ifdef _WIN32
-  if (std::fclose(f) != 0 || !ok) { _wremove(widen(tmp).c_str()); return false; }
-#else
-  if (std::fclose(f) != 0 || !ok) { std::remove(tmp.c_str()); return false; }
-#endif
-#ifdef _WIN32
-  return MoveFileExW(widen(tmp).c_str(), widen(path).c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-  return std::rename(tmp.c_str(), path.c_str()) == 0;
-#endif
-}
 } // namespace hd
 
 // Parameter value text for the host (Live shows these in the device view and automation lanes).

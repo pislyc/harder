@@ -9,12 +9,16 @@ plugins/Harder/   Engine.hpp      DSP engine, line-by-line port of the web engin
                   Model.hpp       project model, groove generator, presets/kits, JSON (web-compatible)
                   Data.hpp        GENERATED from the web sound + groove library (tools/gen_data.js)
                   Export.hpp      loop / kit export (WAV, MIDI, zip), port of the web export
+                  Sample.hpp      SAMPLE machine data: WAV decoding, stored formats, ids, base64 (not in the web app)
+                  Library.hpp     the shared user library (folders = categories, sound / groove files), docs/LIBRARY.md
+                  FileSys.cpp/hpp UTF-8 file helpers (wide-character API on Windows)
                   HostParams.hpp  parameters exposed to the host
                   HarderShared.hpp lock-free command link UI -> audio, host parameter mirror and ownership
                   HarderPlugin.cpp DPF plugin (audio thread, Live transport sync, MIDI, state, files)
                   HarderUI.cpp    NanoVG UI (main face + LAB drawer; AUDIO tab and keyboard in the standalone)
                   res/            app icon (tools/make_icon.py)
-tools/            equivalence, generator, export, host-parameter, VST3-host and CPU tests
+tools/            equivalence, generator, export, host-parameter, VST3-host, sample/library and CPU tests
+docs/LIBRARY.md   the library format for other programs (sounds, grooves, WAV, parameter tables)
 dpf/              DPF with small patches, each behind a define set in plugins/Harder/Makefile:
                   DPF_PARAM_TEXT_HOOK       parameter value text from the plugin
                   DPF_VST3_NO_MIDI_CC_PARAMS no 2080 hidden MIDI-CC parameters
@@ -53,6 +57,8 @@ node tools/preview_test.js prev.f32 && OUT/preview_test prev.f32   # OLED previe
 OUT/vst3_host_test bin/HARDER.vst3/Contents/x86_64-linux/HARDER.so  # real binary in a minimal VST3 host
 node tools/export_ref.js EXP && OUT/export_test EXP default kit0 ... poly && node tools/export_compare.js EXP
 OUT/live_expect project.json pre n out.f32  # expected standalone output after PLAY (live recording test)
+g++ -std=gnu++17 -O1 -fsanitize=address,undefined -pthread tools/sample_test.cpp plugins/Harder/FileSys.cpp OUT/libhmath.a -o OUT/sample_test
+OUT/sample_test <empty dir>              # WAV formats, SAMPLE playback, projects with samples, library, sample lifetime
 ```
 
 `vst3_host_test.cpp` also builds with MinGW (`-static`, against a MinGW libhmath) and runs under Wine against the
@@ -73,3 +79,8 @@ Copyright (C) 2026 pislyc.
 
 Third-party parts keep their own licences: DPF (ISC, `dpf/LICENSE`), RtAudio / RtMidi (MIT-style, in `dpf/`),
 musl math routines (MIT, `plugins/Harder/hmath/COPYRIGHT.musl`), fonts (SIL Open Font License, `fonts/OFL-*.txt`).
+
+Samples: the audio thread reads sample data through raw pointers in the engine's slot table (`Engine::smp`). The main
+thread keeps every sample the engine may still read alive (`Core::engSmp`, `Core::retired`) until the command that
+replaced it has been consumed by the audio thread (`Link::consumed`); after a queue overflow, everything is kept until
+the full resend has been applied. `tools/sample_test` checks this under ASan with an audio thread swapping samples.

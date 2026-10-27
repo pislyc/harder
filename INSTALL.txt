@@ -1,11 +1,11 @@
-HARDER 1.1.1 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
+HARDER 1.2.0 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
 =================================================================================================
 
 包里有两样东西 / Two things in this package
   HARDER.exe     独立程序：双击就能用，不需要 DAW。Standalone program, no DAW needed.
   HARDER.vst3    Ableton Live 等宿主用的 VST3 插件。The VST3 plugin for Live and other hosts.
-两者声音引擎、音色库、工程格式完全相同，工程 .json 可以互相打开（与网页版也互通）。
-Same engine, sounds and project format; project .json files open in both (and in the web app).
+两者声音引擎、音色库、工程格式完全相同，工程 .json 可以互相打开；没有用到 SAMPLE 机器的工程与网页版也互通。
+Same engine, sounds and project format; project .json files open in both (and in the web app, unless they use SAMPLE tracks).
 都不需要安装运行库：静态链接，只依赖 Windows 自带的系统 DLL（不需要 Media Foundation，Windows N 版也能用）。
 No runtime needed: only Windows system DLLs (no Media Foundation, so Windows "N" editions work too).
 
@@ -120,6 +120,36 @@ MIDI 输入 MIDI in（在 MIDI 片段里写音符即可）
   level after the limiter (not saved in the project, not in exports), on a dB scale with the output meter.
   Click or drag; Shift = fine; double-click = 0 dB; wheel = 0.5 dB steps.
 
+SAMPLE 机器 SAMPLE machine（第 10 种机器）
+  - 播放 WAV 采样：任何合成器、声音设计软件渲染出来的声音都能放进轨道，后面的滤波、包络、FX、LFO、
+    parameter lock、条件触发照常可用。Plays WAV samples through the usual filter/amp/FX/LFO and locks.
+  - SRC 页：TUNE（±24 半音）FINE（±1 半音）SMP（采样槽 1–64，可以按步 lock，一条轨每步换一个采样）
+    STRT / END（播放范围）MODE（单次 / 反向 / 循环 / 反向循环）LOOP（循环点）LEV（电平）。
+    OLED 显示整段波形、播放范围和循环点。
+  - 采样随工程保存（内嵌在 .json 和 Live Set 里，换电脑也能打开），每个工程最多 64 个槽。
+    LAB → SOUND → USER LIBRARY → CLEAN UP SLOTS 清掉不再使用的采样。
+  - 混成单声道播放（和 Elektron 采样轨一样），保持文件自己的采样率（实时变速插值），最长 60 秒。
+    支持 WAV：8/16/24/32 位整数、32/64 位浮点、任意声道数、任意采样率。
+
+用户库 User library（LAB → SOUND → USER LIBRARY；LAB → GROOVE → USER）
+  - 位置：文档\HARDER\Library\  —— 独立程序和插件共用。Sounds\ 和 Grooves\ 下的每个文件夹就是一个分类，
+    直接放在 Sounds\ 下的文件显示在 INBOX。可以在 HARDER 里管理，也可以直接在资源管理器里整理（OPEN FOLDER）。
+  - 音色：点击 = 载入当前轨道（保留 choke 和 duck 设置，可撤销）；拖到分类上 = 移动；
+    SAVE SOUND 把当前轨道的音色存进当前分类（SAMPLE 音色连同 WAV 一起存）；IMPORT WAV… 把一个 WAV 复制进库并载入；
+    RENAME / DELETE 作用于选中的音色，没有选中音色时作用于当前分类；双击分类 = 改名；+ NEW = 新建分类。
+    删除的东西移到 Library\Trash\，不会直接删掉（需要按两次确认）。
+  - Groove：SAVE PATTERN 把当前 pattern 存进库，点击 = 载入到当前 pattern（UNDO 可以撤回）。
+  - 名称可以用中文（独立程序里直接输入；中文显示用 Windows 自带的微软雅黑）。在 Live 里插件只收到宿主转发的
+    英文字母和数字：中文名请在独立程序里起，或先用默认名再在资源管理器里改。
+    Names may be Chinese in the standalone; in a host the plugin only receives ASCII keys.
+
+和其他软件联动 Working with other programs
+  - 其他程序把 WAV 文件（或 HARDER 音色 .json + WAV）写进 Library\Sounds\ 的任何位置，两秒内就会出现在库里。
+  - 勾选 "Auto-load new"：新出现的文件或被覆盖的文件（同名重新渲染）会自动载入当前选中的轨道并试听 ——
+    在合成器里渲染，在 HARDER 里马上听到。HARDER 自己保存的文件不会触发。
+  - 文件格式和参数表见源码里的 docs/LIBRARY.md（也在本包里）。写文件时请先用临时文件名，写完再改名。
+    Other programs can write WAVs or HARDER sound files into the library; see docs/LIBRARY.md.
+
 工程文件 Project files (LAB → PROJECT)
   - SAVE/LOAD PROJECT：.json，与网页版 harder-project.json 完全互通。
 
@@ -130,6 +160,10 @@ MIDI 输入 MIDI in（在 MIDI 片段里写音符即可）
   - 操作与网页版相同：点 step 开关；按住 step 半秒锁定后拧旋钮 = parameter lock；
     FUNC/Shift+点 step = trigless lock；双击旋钮复位；Shift 拖动 = 微调；滚轮也可调。
 
+1.2.0 新增 New in 1.2.0
+  - SAMPLE 机器：在轨道上播放 WAV（采样内嵌在工程里）。SAMPLE machine: WAV playback, samples stored in the project.
+  - 用户库：音色和 groove 的自定义分类（文件夹即分类）、保存、导入、移动、改名、删除；
+    与其他程序共用的文件夹和格式，自动载入新文件。User library with categories, shared with other programs.
 1.1.1 新增 New in 1.1.1
   - 主界面右下角的音量区：所选轨道 M / S / 音量推子，输出音量推子（带刻度的电平表）。Level strip.
   - 修正：音频设备重开时 RtAudio 的竞态（启动时应用已存设置、或切换设置时可能闪退/卡死）；
@@ -145,6 +179,8 @@ MIDI 输入 MIDI in（在 MIDI 片段里写音符即可）
   - 只有立体声主输出（多轨分轨输出留到下一版；需要分轨请用 EXPORT LOOP 的 stems）。
   - 独立程序不接收外部 MIDI 时钟，用自己的时钟。The standalone runs its own clock (no MIDI clock in).
   - 只提供 64 位 Windows。
+  - 用到 SAMPLE 机器的工程不能在网页版里打开（网页版没有这个机器）。
+  - SAMPLE 机器是单声道；不读 AIFF、FLAC、MP3 和压缩 WAV；单个采样最长 60 秒。
 
 许可证 License: HARDER 是自由软件，按 GNU GPL 第 3 版（或更新版本）发布，见 LICENSE.txt。
   HARDER is free software under the GNU General Public License v3 or later (LICENSE.txt).

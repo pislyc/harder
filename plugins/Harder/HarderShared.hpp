@@ -9,6 +9,7 @@
 #pragma once
 #include "Model.hpp"
 #include "HostParams.hpp"
+#include "FileSys.hpp"
 #include <mutex>
 #include <thread>
 #include <chrono>
@@ -19,8 +20,8 @@ namespace hd {
 
 struct PlenData { int mlen; int len[NTR]; int scl[NTR]; };
 struct Cmd {
-  enum T : uint8_t { PARAM, MACHINE, TRACKP, STEP, PATTERN, PLEN, BPM, SWING, PLAY, STOP, CUE, FILL, MUTE, SOLO, AUD, ROLL, PANIC, MASTER, LOADDONE };
-  uint8_t t = 0; int8_t tr = 0; int16_t i = 0; int s = 0; double v = 0, v2 = 0; bool flag = false;
+  enum T : uint8_t { PARAM, MACHINE, TRACKP, STEP, PATTERN, PLEN, BPM, SWING, PLAY, STOP, CUE, FILL, MUTE, SOLO, AUD, ROLL, PANIC, MASTER, LOADDONE, SAMPLE };
+  uint8_t t = 0; int8_t tr = 0; int16_t i = 0; int s = 0; double v = 0, v2 = 0; bool flag = false; const SampleData* ptr = nullptr;
   union U { U() {} double p[NP]; Step st; Locks L; PlenData pl; struct { double m[NM]; } ms; struct { int cur; double bpm, swing; uint8_t mutes[NT]; } ld; } u;
 };
 
@@ -30,12 +31,17 @@ struct Link {
   std::unique_ptr<Pattern[]> pat{ new Pattern[NPAT] };   // latest copy of each pattern sent with Cmd::PATTERN
   std::atomic<uint32_t> dropped{ 0 };
   bool overflow = false;
+  // command counters: pushed (main thread, under the lock) and consumed (applied, skipped as a duplicate pattern, or
+  // discarded on overflow). A sample the engine no longer points to may be freed once consumed passed its command.
+  uint64_t pushed = 0; std::atomic<uint64_t> consumed{ 0 };
   Link() { q.reserve(8192); }
   void lock() { while (busy.exchange(true, std::memory_order_acquire)) std::this_thread::yield(); }
   void unlock() { busy.store(false, std::memory_order_release); }
   // main thread
-  void push(const Cmd& c) { lock(); if (q.size() < 8000) q.push_back(c); else overflow = true; unlock(); }
-  void pushPattern(int i, const Pattern& P) { lock(); pat[i] = P; Cmd c; c.t = Cmd::PATTERN; c.i = (int16_t)i; if (q.size() < 8000) q.push_back(c); else overflow = true; unlock(); }
+  // returns the command's sequence number (consumed > it means the audio thread is past it), UINT64_MAX if the queue
+  // was full and the command dropped (syncAllIfOverflow resends everything)
+  uint64_t push(const Cmd& c) { lock(); uint64_t n = UINT64_MAX; if (q.size() < 8000) { q.push_back(c); n = pushed++; } else overflow = true; unlock(); return n; }
+  void pushPattern(int i, const Pattern& P) { lock(); pat[i] = P; Cmd c; c.t = Cmd::PATTERN; c.i = (int16_t)i; if (q.size() < 8000) { q.push_back(c); pushed++; } else overflow = true; unlock(); }
   // audio thread: never waits. Returns true if something was applied.
   // A pattern copy is 267 KB, so per block at most 2 are applied and at most MAX_CMDS commands (the rest wait for
   // the next block, order kept), and a
@@ -53,6 +59,7 @@ struct Link {
       if (c.t == Cmd::PATTERN) { if (last[c.i] != k) continue; if (copies == MAX_PATTERN_COPIES) break; copies++; }
       apply(E, c);
     }
+    consumed.fetch_add((uint64_t)k, std::memory_order_release);
     if (k >= (int)q.size()) q.clear();     // keeps capacity: no deallocation on the audio thread
     else q.erase(q.begin(), q.begin() + k);
     busy.store(false, std::memory_order_release);
@@ -81,6 +88,7 @@ struct Link {
       case Cmd::PANIC: E.panic(); break;
       case Cmd::MASTER: E.loadMaster(c.u.ms.m); E.masterDirty = true; break;
       case Cmd::LOADDONE: E.loadDone(c.u.ld.cur, c.u.ld.bpm, c.u.ld.swing, c.u.ld.mutes); break;
+      case Cmd::SAMPLE: E.setSample(c.i, c.ptr); break;
     }
   }
 };
@@ -97,6 +105,9 @@ struct Core {
   std::atomic<uint32_t> modelSeq{ 0 };      // bumps when the model changes outside the UI (state load)
   std::atomic<uint32_t> cpuPermille{ 0 };   // audio-thread load estimate (0.1 %)
   std::string uiState;                      // UI-only state (theme, drawer, scale, output level) persisted in the project
+  SampleCache cache;                        // every sample seen this session (undo snapshots refer to samples by id)
+  SampleRef engSmp[NSLOT];                  // what the audio engine points to (main thread)
+  struct Retired { SampleRef r; uint64_t seq; }; std::vector<Retired> retired;   // freed once the engine let go
   // output level: after the limiter, like a hardware MAIN knob; not part of the project or of exports (dB, <= -80 = off)
   std::atomic<float> outDb{ 0 };
   void applyUiStateDsp() { JVal j; if (parseJson(uiState, j) && j.isObj()) { const double d = j["outDb"].num(0); outDb.store((float)(d < -80 ? -80 : d > 0 ? 0 : d)); } }
@@ -199,15 +210,43 @@ struct Core {
   void sendAud(int tr, double vel, const Locks* L) { Cmd c; c.t = Cmd::AUD; c.tr = (int8_t)tr; c.v = vel; c.flag = L && L->any(); if (c.flag) c.u.L = *L; link.push(c); }
   void sendRoll(int tr, bool on, double st, double vel, const Locks* L) { Cmd c; c.t = Cmd::ROLL; c.tr = (int8_t)tr; c.flag = on; c.v = st; c.v2 = vel; c.s = L && L->any(); if (c.s) c.u.L = *L; link.push(c); }
   void sendMaster() { Cmd c; c.t = Cmd::MASTER; std::memcpy(c.u.ms.m, S->master, sizeof S->master); link.push(c); }
+  // sample slots that differ from what the engine has (force: all). The old data stays alive until the engine has
+  // applied the change: the audio thread may be reading it until then.
+  void sendSamples(bool force = false) {
+    for (int i = 0; i < NSLOT; i++) {
+      if (!force && engSmp[i] == S->smp[i]) continue;
+      if (S->smp[i]) cache.add(S->smp[i]);
+      Cmd c; c.t = Cmd::SAMPLE; c.i = (int16_t)i; c.ptr = S->smp[i].get();
+      const uint64_t seq = link.push(c);
+      if (engSmp[i]) retired.push_back({ engSmp[i], seq });
+      engSmp[i] = S->smp[i];
+    }
+    gcSamples();
+  }
+  void gcSamples() {
+    const uint64_t done = link.consumed.load(std::memory_order_acquire);
+    retired.erase(std::remove_if(retired.begin(), retired.end(), [done](const Retired& r) { return r.seq < done; }), retired.end());
+  }
   // whole project, e.g. after a state load (force: also patterns the engine already has, after an engine re-init).
   // Unchanged patterns are skipped so the audio thread copies as little as possible.
   void sendAll(bool force = false) {
+    sendSamples(force);   // before the tracks: a voice may trigger a slot right after its MACHINE command
     for (int tr = 0; tr < NT; tr++) sendMachine(tr);
     sendMaster();
     for (int i = 0; i < NPAT; i++) if (force || !samePattern(sent[i], S->patterns[i])) sendPattern(i);
     Cmd c; c.t = Cmd::LOADDONE; c.u.ld.cur = S->cur; c.u.ld.bpm = S->bpm; c.u.ld.swing = S->swing; std::memcpy(c.u.ld.mutes, S->mutes, NT); link.push(c);
   }
-  void syncAllIfOverflow() { bool ov; link.lock(); ov = link.overflow; if (ov) { link.q.clear(); link.overflow = false; } link.unlock(); if (ov) sendAll(true); }
+  void syncAllIfOverflow() {
+    bool ov; link.lock(); ov = link.overflow; if (ov) { link.consumed.fetch_add(link.q.size()); link.q.clear(); link.overflow = false; } link.unlock();
+    if (!ov) return;
+    // discarded SAMPLE commands never reached the engine: it may still point to any retired sample. Keep all of them
+    // until the full resend below has been applied.
+    for (Retired& r : retired) r.seq = UINT64_MAX;
+    for (int i = 0; i < NSLOT; i++) if (engSmp[i]) retired.push_back({ engSmp[i], UINT64_MAX });
+    sendAll(true);
+    link.lock(); const uint64_t last = link.pushed; link.unlock();
+    for (Retired& r : retired) if (r.seq == UINT64_MAX) r.seq = last - 1;   // the last resend command
+  }
 };
 
 Core* harderCore(void* pluginInstance);   // implemented in HarderPlugin.cpp
@@ -215,10 +254,6 @@ Core* harderCore(void* pluginInstance);   // implemented in HarderPlugin.cpp
 // ---------- standalone: files in the user's folder (Documents/HARDER on Windows) ----------
 bool harderIsStandalone();                     // implemented in HarderPlugin.cpp (DPF plugin format name)
 std::string harderConfigDir();                 // with trailing separator; created if missing
-// UTF-8 paths on every OS (wide-character file API on Windows); writes go to path.tmp and replace path afterwards,
-// so a crash while writing never leaves a half file behind. Implemented in HarderPlugin.cpp.
-bool readTextFile(const std::string& path, std::string& out);
-bool writeFileAtomic(const std::string& path, const void* data, size_t size);
-inline bool writeFileAtomic(const std::string& path, const std::string& s) { return writeFileAtomic(path, s.data(), s.size()); }
+// file helpers: FileSys.hpp
 
 } // namespace hd

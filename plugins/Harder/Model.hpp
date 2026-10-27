@@ -30,11 +30,14 @@ struct Project {
   double master[NM];
   Pattern patterns[NPAT];
   int cur = 0; double bpm = 125, swing = 50; uint8_t mutes[NT] = { 0 }; int perfA = 8, perfB = 24;
+  SampleRef smp[NSLOT];   // SAMPLE machine slots (immutable data, shared with the engine, undo and the library)
   Project() { reset(); }
   void reset() {   // in place (a Project is 2 MB: never create one on the stack)
     kit = 6; for (int i = 0; i < NT; i++) { tracks[i].m = M_SUB; defaultTrackParams(M_SUB, tracks[i].p); tracks[i].pre.clear(); roles[i] = i; mutes[i] = 0; }
     defaultMaster(master); for (auto& P : patterns) P.reset(); cur = 0; bpm = 125; swing = 50; perfA = 8; perfB = 24;
+    for (auto& x : smp) x.reset();
   }
+  bool anySample() const { for (auto& x : smp) if (x) return true; return false; }
 };
 
 struct GenOpts { double den = 0.55, vari = 0.35; bool locks = true, fills = true, half = false; };
@@ -201,8 +204,28 @@ inline void defaultProject(Project& p) {
   p.bpm = p.patterns[0].bpm; p.swing = p.patterns[0].swing;
 }
 
+// ---------- samples in project files ----------
+// "samples": [{ "slot", "id", "name", "rate", "len", "fmt": "s16"|"s24"|"f32", "data": base64 little-endian mono }]
+// Only written when a slot is used, so projects without samples stay byte-identical to the web format.
+// Without "data" (undo snapshots) a sample is looked up by id in the session cache.
+inline JVal sampleToJson(const SampleData& s, bool withData) {
+  JVal o = JVal::Obj(); o.set("id", JVal::Str(s.id)); o.set("name", JVal::Str(s.name)); o.set("rate", JVal::Num(s.rate));
+  o.set("len", JVal::Num(s.len)); o.set("fmt", JVal::Str(sampleFmtName(s.fmt))); if (withData) o.set("data", JVal::Str(s.base64()));
+  return o;
+}
+inline SampleRef sampleFromJson(const JVal& j, SampleCache* cache, std::string* err = nullptr) {
+  if (!j.isObj()) return nullptr;
+  const std::string id = j["id"].str();
+  if (j["data"].isStr()) {
+    std::vector<uint8_t> b; if (!b64decode(j["data"].str(), b)) { if (err) *err = "bad sample data"; return nullptr; }
+    SampleRef s = sampleFromBytes(j["name"].str(), j["rate"].num(0), sampleFmtFromName(j["fmt"].str()), b, err);
+    return cache ? cache->add(s) : s;
+  }
+  return cache && !id.empty() ? cache->find(id) : nullptr;
+}
+
 // ---------- JSON (web harder-project.json, v:2) ----------
-inline JVal projectToJson(const Project& S) {
+inline JVal projectToJson(const Project& S, bool withData = true) {
   JVal o = JVal::Obj();
   o.set("v", JVal::Num(2)); o.set("kit", JVal::Num(S.kit));
   JVal tr = JVal::Arr();
@@ -218,10 +241,15 @@ inline JVal projectToJson(const Project& S) {
   o.set("cur", JVal::Num(S.cur)); o.set("bpm", JVal::Num(S.bpm)); o.set("swing", JVal::Num(S.swing));
   JVal mu = JVal::Arr(); for (int t = 0; t < NT; t++) mu.push(JVal::Num(S.mutes[t])); o.set("mutes", std::move(mu));
   JVal pf = JVal::Obj(); pf.set("a", JVal::Num(S.perfA)); pf.set("b", JVal::Num(S.perfB)); o.set("perf", std::move(pf));
+  if (S.anySample()) {
+    JVal sa = JVal::Arr();
+    for (int i = 0; i < NSLOT; i++) if (S.smp[i]) { JVal e = sampleToJson(*S.smp[i], withData); e.o.insert(e.o.begin(), { "slot", JVal::Num(i) }); sa.push(std::move(e)); }
+    o.set("samples", std::move(sa));
+  }
   return o;
 }
 // validProject() from ui.js
-inline bool projectFromJson(const JVal& o, Project& p) {
+inline bool projectFromJson(const JVal& o, Project& p, SampleCache* cache = nullptr) {
   if (!o.isObj() || o["v"].num(0) != 2 || !o["tracks"].isArr() || o["tracks"].size() != NT || !o["patterns"].isArr() || o["patterns"].size() != NPAT) return false;
   for (int t = 0; t < NT; t++) if (machineIndex(o["tracks"][t]["m"].str().c_str()) < 0) return false;
   std::unique_ptr<Project> q(new Project());
@@ -237,9 +265,11 @@ inline bool projectFromJson(const JVal& o, Project& p) {
   for (int t = 0; t < NT; t++) q->mutes[t] = o["mutes"][t].truthy() ? 1 : 0;
   const JVal& pf = o["perf"]; if (pf["a"].isNum() && pf["b"].isNum()) { q->perfA = clampi(pf["a"].n, 0, 47, 8); q->perfB = clampi(pf["b"].n, 0, 47, 24); }
   q->bpm = q->patterns[q->cur].bpm; q->swing = q->patterns[q->cur].swing;
+  const JVal& sa = o["samples"];
+  for (size_t k = 0; k < sa.size(); k++) { const int slot = clampi(sa[k]["slot"].num(-1), -1, NSLOT - 1, -1); if (slot >= 0) q->smp[slot] = sampleFromJson(sa[k], cache); }
   p = *q; return true;
 }
-inline std::string projectToString(const Project& S) { std::string s; writeJson(s, projectToJson(S)); return s; }
-inline bool projectFromString(const std::string& s, Project& p) { JVal j; if (!parseJson(s, j)) return false; return projectFromJson(j, p); }
+inline std::string projectToString(const Project& S, bool withData = true) { std::string s; writeJson(s, projectToJson(S, withData)); return s; }
+inline bool projectFromString(const std::string& s, Project& p, SampleCache* cache = nullptr) { JVal j; if (!parseJson(s, j)) return false; return projectFromJson(j, p, cache); }
 
 } // namespace hd
