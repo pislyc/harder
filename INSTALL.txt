@@ -1,0 +1,154 @@
+HARDER 1.1.1 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
+=================================================================================================
+
+包里有两样东西 / Two things in this package
+  HARDER.exe     独立程序：双击就能用，不需要 DAW。Standalone program, no DAW needed.
+  HARDER.vst3    Ableton Live 等宿主用的 VST3 插件。The VST3 plugin for Live and other hosts.
+两者声音引擎、音色库、工程格式完全相同，工程 .json 可以互相打开（与网页版也互通）。
+Same engine, sounds and project format; project .json files open in both (and in the web app).
+都不需要安装运行库：静态链接，只依赖 Windows 自带的系统 DLL（不需要 Media Foundation，Windows N 版也能用）。
+No runtime needed: only Windows system DLLs (no Media Foundation, so Windows "N" editions work too).
+
+=================================================================================================
+独立程序 / Standalone (HARDER.exe)
+=================================================================================================
+安装 Install
+  - 放在任何文件夹里（例如 C:\Program Files\HARDER\ 或桌面），双击运行。可以右键固定到开始菜单。
+    Put it in any folder and double-click it.
+  - 第一次运行时 Windows SmartScreen 可能提示"未知发布者"（程序没有代码签名）：点"更多信息"→"仍要运行"。
+    SmartScreen may warn on first start (the program is not code-signed): "More info" > "Run anyway".
+
+自动保存 Autosave
+  - 工程每隔几秒、以及关闭程序时自动保存到  文档\HARDER\autosave.json ；下次打开从这里继续。
+    这个文件就是普通的 HARDER 工程 .json，网页版和插件都能打开。
+    Saved every few seconds and on exit to Documents\HARDER\autosave.json; the next start continues there.
+  - 界面设置（深浅色、抽屉、缩放）在 ui.json，音频设置在 settings.json，都在同一个文件夹。
+
+音频设置 Audio (LAB → AUDIO)
+  - 输出设备：System default（跟随 Windows 默认设备）或列表里的某个设备。选择后立即切换，下次启动沿用。
+    Output: system default, or a specific device. Applied at once and remembered.
+  - 采样率：Windows 共享模式下由设备决定（Windows 声音设置 → 设备 → 属性 → 高级 里改）。
+    引擎在 44.1/48/96 kHz 下与网页版的声音一致。
+    Sample rate: in shared mode it is the device's rate (Windows Sound settings > device > Advanced).
+  - 缓冲 Buffer：64–2048 样本。越小延迟越低、越吃 CPU；爆音时调大。界面上显示对应毫秒数和 DSP 负载。
+    Smaller = lower latency and more CPU; raise it if you hear clicks.
+  - 如果设备打不开或中途断开（被别的程序独占、蓝牙耳机断开等），程序不会退出，顶栏显示
+    "NO AUDIO OUTPUT"，每 3 秒自动重试（先试你选的设备，不行就用系统默认设备）；也可以在 AUDIO 页另选设备。
+    If the device cannot open or drops out, the program keeps running ("NO AUDIO OUTPUT") and retries every
+    3 s (your device, else the system default); or pick a device in AUDIO.
+
+MIDI 输入 MIDI in (LAB → AUDIO)
+  - 第一次启动会打开所有 MIDI 输入；之后按你勾选的保存。Windows 上一个 MIDI 输入同时只能给一个程序用：
+    要在别的程序里用这个键盘，就在这里取消勾选。接上新设备后点 RESCAN。
+    All inputs are opened on the first start, then your ticks are remembered. On Windows one program at a time
+    can use a MIDI input: untick it here to use it elsewhere. RESCAN after plugging a device in.
+  - C1–G1（36–43）：触发第 1–8 轨（带力度）；C0–G0（24–31）：预约 pattern 1–8。
+
+电脑键盘 Keyboard（按键盘上的物理位置，所以法语 AZERTY 键盘位置一样）
+  空格 Space ............ 播放 / 停止 play / stop
+  按住 1–8 和 Q–I ........ 第 1–16 步（当前页）；按住时拧旋钮 = parameter lock；短按 = 开/关该步
+                            hold 1–8 and Q–I = steps 1–16; turn a knob while holding to lock; tap = toggle
+  Shift + 步键 ........... trigless lock
+  Z X C V B N M , ........ 第 1–8 轨的打击垫（试听）；Shift + 垫 = 静音 track pads (Shift: mute)
+  按住 A（AZERTY 上是 Q）. Control All（旋钮同时改所有轨）
+  F ...................... Fill（按住）
+  ← → .................... 换参数页 page      ↑ ↓ ...... 换轨 track
+  Esc .................... 释放锁住的步 release held steps     L ...... LAB 抽屉 drawer
+  Ctrl+Z ................. 撤销 undo（按键帽上的 Z，AZERTY 也一样）
+  （AZERTY 上步键就是 & é " ' ( - è _ 和 A Z E R T Y U I 那两排，打击垫是 W X C V B N , ; 那一排。）
+
+=================================================================================================
+VST3 插件 / Plugin (HARDER.vst3)
+=================================================================================================
+安装 Install
+1. 把整个 "HARDER.vst3" 文件夹复制到：
+   Copy the whole "HARDER.vst3" folder to:
+       C:\Program Files\Common Files\VST3\
+   （是文件夹，不要只拷里面的文件 / copy the folder, not the file inside it）
+   从 1.0.x 升级：直接覆盖旧文件夹；已保存的 Live Set 照常打开。Upgrading: replace the old folder.
+2. Ableton Live → Preferences → Plug-Ins：
+   打开 "Use VST3 Plug-In System Folders"，点 "Rescan"。
+3. 在浏览器 Plug-Ins → VST3 → HARDER 里找到它，拖到一条 MIDI 轨上（它是乐器）。
+
+走带 Transport
+  - Live 播放时，音序器跟随 Live 的播放、速度和位置（从任意小节开始都对位，
+    Live 循环跳回或拖动播放头时会立即重新对齐，速度自动化时按音乐时间缩放）。
+  - Live 停止时，插件上的 PLAY 用插件自己的时钟、按 pattern 速度播放（试音色用）。
+  - Pattern 的 swing 照常生效；pattern 自带的 BPM 在跟随 Live 时被 Live 速度取代。
+
+MIDI 输入 MIDI in（在 MIDI 片段里写音符即可）
+  - C1–G1（音符 36–43）：触发第 1–8 轨，带力度。
+  - C0–G0（音符 24–31）：预约下一个 pattern（在当前 pattern 结尾切换）。
+  - 也可以自动化 "Pattern" 参数（1–8）来切换 pattern。
+
+自动化 Automation（Live 里点 "Configure" 或直接在自动化包络里选）
+  - 每轨：Src 1–8（当前机器的 8 个声源参数；数值显示会带上机器的参数名，如 "TUNE 39.9"）、Filter Freq/Reso/Env、
+    Amp Decay、Drive、Pan、Volume、Delay/Reverb Send、LFO Depth。
+  - 主控：Delay Feedback/Return、Reverb Decay/Return、Glue、Master Drive、DJ Filter、
+    Master Volume、Duck Shape/Depth。
+  - 表演：T1–T8 Mute、Fill、Pattern（1–8）。
+  - Parameter lock（按住 step 拧旋钮）存在 pattern 里，不占自动化通道。
+  - 你在插件里刚改过的参数（载入音色/套件、拧旋钮），1 秒内不接受 Live 回传的旧值；1 秒后自动化照常生效。
+
+保存 Saving
+  - 整个工程（音色、8 个 pattern、锁、主控、界面设置）随 Live Set 一起保存。
+  - 电脑键盘快捷键在插件里不启用（键盘归 Live 用）。
+
+=================================================================================================
+两者共有 / Both
+=================================================================================================
+导出 Export (LAB → PROJECT → EXPORT)
+  - EXPORT LOOP：当前 pattern 渲染成 .zip：无缝循环的 24-bit WAV（尾音折回开头）、可选每轨分轨（stems）、
+    MIDI（C1 = 第 1 轨）和工程 .json。长度 1/2/4/8 遍。与网页版导出的文件相同。
+    在 Live 里且 Live 正在播放时，按 Live 的速度渲染。
+    Loop: seamless 24-bit WAV, optional stems, MIDI and the project, 1/2/4/8 loops; same files as the web export.
+  - EXPORT KIT：8 个音色各渲染成干声单发 WAV + 套件 .json。Kit: eight dry one-shots.
+  - 导出在后台进行，不影响播放；进度和结果显示在按钮下方。
+
+音量区 Level strip（主界面右下角）
+  左边：当前所选轨道 / selected track
+    M = 静音 mute，S = 独奏 solo（独奏时其他轨道的按钮变暗，被独奏的轨道标 S；再按一次取消）。
+    推子 = 这条轨的音量（就是 AMP 页的 VOL，存在工程里，可撤销，在 Live 里可自动化）；
+    推子底下的细条是这条轨经过音量和声像之后的电平，竖线是 1.5 秒峰值保持。
+  右边：OUT = 输出音量，作用在所有处理（包括限幅器）之后，相当于硬件上的 MAIN 旋钮：
+    只影响你听到的声音，不改工程，也不影响导出的 WAV。范围 −∞ 到 0 dB，刻度 −40 … 0 dB，
+    电平条显示实际输出电平。下面的 LIMIT 是限幅器正在压掉的分贝数。
+    （工程里的总音量 MASTER VOL 仍在 FX 轨 → MIX 页，它作用在限幅器之前，会进导出。）
+  操作：点击或拖动推子；Shift + 拖动 = 微调；双击 = 回到 0 dB；滚轮 = 每格 0.5 dB（Shift：0.1 dB）。
+  输出音量随界面设置一起保存（独立程序在 ui.json，插件在 Live Set 里）。
+  Left: selected track M / S / volume fader (the track's VOL) with its post-fader level. Right: OUT, the output
+  level after the limiter (not saved in the project, not in exports), on a dB scale with the output meter.
+  Click or drag; Shift = fine; double-click = 0 dB; wheel = 0.5 dB steps.
+
+工程文件 Project files (LAB → PROJECT)
+  - SAVE/LOAD PROJECT：.json，与网页版 harder-project.json 完全互通。
+
+界面 UI
+  - LAB 拉手：展开/折叠下方的详细设置（Groove 库、音色库、套件、表演、工程，独立程序还有 AUDIO）。
+  - 右下 DARK/LIGHT：深浅色。LAB → PROJECT → UI SIZE：75%–150% 缩放（高分屏自动乘上 Windows 缩放比例）。
+  - 右上角 DSP 读数是音频线程的实际负载（处理时间 / buffer 时长，0.5 秒平均）。
+  - 操作与网页版相同：点 step 开关；按住 step 半秒锁定后拧旋钮 = parameter lock；
+    FUNC/Shift+点 step = trigless lock；双击旋钮复位；Shift 拖动 = 微调；滚轮也可调。
+
+1.1.1 新增 New in 1.1.1
+  - 主界面右下角的音量区：所选轨道 M / S / 音量推子，输出音量推子（带刻度的电平表）。Level strip.
+  - 修正：音频设备重开时 RtAudio 的竞态（启动时应用已存设置、或切换设置时可能闪退/卡死）；
+    驱动出错时不再退出，自动重连。Fixed a driver-reopen race (crash/hang) and exit on driver errors.
+1.1.0 新增 New in 1.1.0
+  - 独立程序 HARDER.exe（音频/MIDI 设置、自动保存、键盘快捷键）。Standalone program.
+  - 导出 loop / 套件（插件和独立程序都有）。Loop and kit export in both.
+1.0.1 修正 Fixes in 1.0.1
+  - Live 回传的旧参数值会把新载入的音色覆盖回上一个音色（音色听起来雷同或与网页版不同）。
+  - DIGITAL 类音色的波形预览画错（不影响声音）。
+
+已知限制 Known limits
+  - 只有立体声主输出（多轨分轨输出留到下一版；需要分轨请用 EXPORT LOOP 的 stems）。
+  - 独立程序不接收外部 MIDI 时钟，用自己的时钟。The standalone runs its own clock (no MIDI clock in).
+  - 只提供 64 位 Windows。
+
+许可证 License: HARDER 是自由软件，按 GNU GPL 第 3 版（或更新版本）发布，见 LICENSE.txt。
+  HARDER is free software under the GNU General Public License v3 or later (LICENSE.txt).
+  源码 Source: https://github.com/pislyc/harder
+字体 Fonts: Michroma, Saira Condensed, Silkscreen, IBM Plex Mono — SIL Open Font License (see licenses/).
+Built with DPF (DISTRHO Plugin Framework, ISC licence) with RtAudio/RtMidi (MIT-style licences);
+math routines from musl libc (MIT licence).

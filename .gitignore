@@ -1,0 +1,9 @@
+/bin/
+/bin-*/
+/build/
+/dist/
+*.o
+*.d
+*.f32
+*.wav
+/OUT/
