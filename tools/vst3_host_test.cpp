@@ -271,6 +271,55 @@ int main(int argc, char** argv) {
     CHECK(r1 - r0 < 70, "samples of earlier states kept in memory (%.0f MB)", r1 - r0);
   }
 
+  // 8: multi-out. 9 output buses (main + Track 1-8, the track buses auxiliary and off by default). A track set to its
+  //    own output leaves the main mix and plays on its bus once the host activates the bus; with the bus off it stays
+  //    in the main mix. Compared with the engine given the same output routing.
+  {
+    const int nb = v3_cpp_obj(comp)->get_bus_count(comp, V3_AUDIO, V3_OUTPUT);
+    bool infoOk = nb == 1 + NT;
+    for (int b = 0; b < nb && infoOk; b++) {
+      v3_bus_info bi; v3_cpp_obj(comp)->get_bus_info(comp, V3_AUDIO, V3_OUTPUT, b, &bi);
+      std::string nm; for (int k = 0; k < 128 && bi.bus_name[k]; k++) nm += (char)bi.bus_name[k];
+      const std::string want = b == 0 ? "Audio Output" : "Track " + std::to_string(b);
+      infoOk = bi.channel_count == 2 && nm == want && (b == 0 ? (bi.bus_type == V3_MAIN && (bi.flags & V3_DEFAULT_ACTIVE)) : (bi.bus_type == V3_AUX && !(bi.flags & V3_DEFAULT_ACTIVE)));
+      if (!infoOk) std::printf("  bus %d: '%s' %d ch type %d flags %u\n", b, nm.c_str(), bi.channel_count, bi.bus_type, bi.flags);
+    }
+    CHECK(infoOk, "output buses (%d)", nb);
+    const int RT = 2;   // track 3: FM kick (no random source), no sends
+    std::unique_ptr<Project> Q(new Project()); *Q = *P; for (auto& x : Q->smp) x.reset();
+    Q->tracks[RT].m = M_FMK; defaultTrackParams(M_FMK, Q->tracks[RT].p); Q->tracks[RT].p[24] = 0; Q->tracks[RT].p[25] = 0; Q->tracks[RT].p[23] = 0; Q->outs[RT] = 1;
+    for (auto& pt : Q->patterns) for (auto& row : pt.steps) for (auto& st : row) st = Step();
+    CHECK(setStateJson(projectToString(*Q)) == V3_OK, "state with a routed track");
+    std::vector<std::vector<float>> ob(2 * NT, std::vector<float>(B)); std::vector<float*> optr(2 * NT); for (int k = 0; k < 2 * NT; k++) optr[k] = ob[k].data();
+    std::vector<v3_audio_bus_buffers> buses(1 + NT); buses[0] = bus;
+    for (int t = 0; t < NT; t++) { buses[1 + t].num_channels = 2; buses[1 + t].channel_silence_bitset = 0; buses[1 + t].channel_buffers_32 = &optr[2 * t]; }
+    auto process9 = [&](std::vector<float>* rm, std::vector<float>* rt) {
+      v3_process_data d; std::memset(&d, 0, sizeof d); d.process_mode = V3_REALTIME; d.symbolic_sample_size = V3_SAMPLE_32; d.nframes = B;
+      d.num_output_buses = 1 + NT; d.outputs = buses.data(); d.input_params = (v3_param_changes**)&in; d.output_params = (v3_param_changes**)&out; d.input_events = (v3_event_list**)&ev;
+      out.clear(); v3_cpp_obj(proc)->process(proc, &d); in.clear(); ev.ev.clear();
+      if (rm) rm->insert(rm->end(), L.begin(), L.end()); if (rt) rt->insert(rt->end(), ob[2 * RT].begin(), ob[2 * RT].end());
+    };
+    auto note = [&]() { v3_event e; std::memset(&e, 0, sizeof e); e.type = V3_EVENT_NOTE_ON; e.note_on.pitch = (int16_t)(36 + RT); e.note_on.velocity = 110 / 127.f; e.note_on.note_id = -1; ev.ev.push_back(e); };
+    for (int k = 0; k < 600; k++) process9(nullptr, nullptr);   // earlier sounds and FX tails end
+    // a) the track's bus is off: the track plays in the main mix
+    std::vector<float> m1, t1; note(); for (int k = 0; k < 200; k++) process9(&m1, &t1);
+    double pm1 = 0, pt1 = 0; for (float x : m1) pm1 = std::max(pm1, (double)std::fabs(x)); for (float x : t1) pt1 = std::max(pt1, (double)std::fabs(x));
+    CHECK(pm1 > 0.05 && pt1 == 0, "bus off: track in the main mix (main peak %.3f, bus peak %g)", pm1, pt1);
+    // b) bus on: the track only on its bus, the main output silent; bus = the engine's routed output
+    v3_cpp_obj(proc)->set_processing(proc, 0); v3_cpp_obj(comp)->set_active(comp, 0);
+    v3_cpp_obj(comp)->activate_bus(comp, V3_AUDIO, V3_OUTPUT, 1 + RT, 1);
+    v3_cpp_obj(comp)->set_active(comp, 1); v3_cpp_obj(proc)->set_processing(proc, 1);
+    for (int k = 0; k < 600; k++) process9(nullptr, nullptr);
+    std::vector<float> m2, t2; note(); for (int k = 0; k < 200; k++) process9(&m2, &t2);
+    double pm2 = 0, pt2 = 0; for (float x : m2) pm2 = std::max(pm2, (double)std::fabs(x)); for (float x : t2) pt2 = std::max(pt2, (double)std::fabs(x));
+    std::unique_ptr<Engine> X(new Engine()); X->init(sr); for (int t = 0; t < NT; t++) X->loadTrack(t, Q->tracks[t].m, Q->tracks[t].p); X->loadMaster(Q->master);
+    std::vector<float> xl(B), xr(B), xtl(B), xtr(B), ref; X->audition(RT, 110, nullptr);
+    for (int k = 0; k < 200; k++) { X->tout[RT][0] = xtl.data(); X->tout[RT][1] = xtr.data(); X->process(xl.data(), xr.data(), B); ref.insert(ref.end(), xtl.begin(), xtl.end()); }
+    double dd = 0; for (size_t i = 0; i < t2.size() && i < ref.size(); i++) dd = std::max(dd, (double)std::fabs(t2[i] - ref[i]));
+    std::printf("  multi-out: bus off -> main peak %.3f; bus on -> main peak %.2g, Track %d bus peak %.3f, vs engine max diff %.2g\n", pm1, pm2, RT + 1, pt2, dd);
+    CHECK(pm2 < 1e-6 && pt2 > 0.05 && dd < 1e-6, "bus on: main %.3g, bus %.3f, diff %.3g", pm2, pt2, dd);
+  }
+
   v3_cpp_obj(proc)->set_processing(proc, 0); v3_cpp_obj(comp)->set_active(comp, 0);
   std::printf("%s (%d failures)\n", fails ? "VST3 HOST TEST FAILED" : "VST3 HOST TEST PASSED", fails);
   return fails ? 1 : 0;

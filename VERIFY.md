@@ -1,6 +1,33 @@
-# HARDER — verification report (1.3.1: standalone program + VST3 plugin)
+# HARDER — verification report (2.0.0: standalone program + VST3 plugin)
 
 All numbers below were measured in the build environment (Linux x86-64 VM, 2 cores; Windows binaries run under Wine 9).
+
+## F. New in 2.0.0: user kits, chain / song, slices, stereo, resampling, MIDI clock, multi-out
+
+| check | result |
+|---|---|
+| existing projects | the 36 web-equivalence renders (44.1 / 48 / 96 kHz) are bit-identical to 1.3.1 (vs the web engine: max 5.96e-8 as before); generator 1001 objects 0 mismatches; presets through the UI path 0/111; host echo 0/111; preview 0/222; sync drift 0; `core_test` passed (0 heap allocations on the audio thread); the 20 export zips of the 10 test projects are byte-identical to 1.3.1. A project that uses none of the 2.0 features is written exactly as before |
+| `tools/v2_test.cpp`, native with ASan/UBSan and as a Windows exe under Wine | 74 checks pass on both (below) |
+| slices | equal slices (8/16/32/64) and slice points (AUTO, SLCE = step or a fixed slice): playback range = the slice; a one-shot slice plays the sample's values exactly (fades only where the slice cuts); a reversed slice starts at its last frame; in the sequencer each of 16 trigs starts at its own slice |
+| stereo samples | both channels played, separately filtered; a mono sample without slices keeps its 1.x id (old projects and undo snapshots still resolve) |
+| chain / song (internal clock) | chain order and times exact; song rows with repeats, row mutes (no trig of a muted track in that row, also for steps scheduled before the row starts), a row tempo of 150 BPM (step spacing within 1 sample), STOP at the end; a pattern cued during the song plays once, then the song continues where it was |
+| song under a host | starting the host at 6 positions (beats 0, 4, 8, 9.25, 17, 26, inside rows and repeats) gives the same trigs as playing from bar 1 (within 1 sample); with STOP, a host position after the end is silent |
+| resampling | MAIN from the pattern start = the output sample for sample; a track tap = that track after pan and volume (< 1e-6); stopping keeps what was recorded; cancelling while waiting records nothing |
+| track outputs (engine) | main output without the routed track = main output with the track muted (difference 0); the routed output = the track at the main mix's level, delayed by the limiter's look-ahead (< 1e-6) |
+| MIDI clock (component) | ±2 ms jittered clock at 125 BPM: same trigs as the internal clock started on the first tick, within 1.5 ms, tempo within 0.05 BPM; Stop; Continue at song position 32 resumes at beat 8; clock out: one Start just before the first step, ticks every quarter / 24 exactly, Stop |
+| kits | save (incl. a stereo sample with cue slices and a Chinese track name) and load: machines, parameters, samples (same ids), roles, master FX; rename moves the samples folder and rewrites the references; trash takes the samples along; EXPORT KIT renders SAMPLE tracks (they were silent before 2.0, fixed) |
+| WAV | stereo WAV with cue points: round trip bit-exact, slice points = cue points |
+| transient detection | 12 noise hits of 0.2-0.9 on each other's tails: sensitivity 85 finds 12 of 12, sensitivity 50 finds 11 (the 12th rises 3.9 dB over a louder hit's tail), both with no false points, all within 1.3 ms of the onset |
+| VST3 host test, real binaries (Linux .so, Windows DLL under Wine) | 9 output buses (main bus active by default, "Track 1"-"Track 8" auxiliary and off); a routed track with its bus off stays in the main mix (peak 0.543); with the bus on, the main output is silent (5e-12) and the bus equals the engine's routed output (2.4e-7); all earlier sections pass |
+| pluginval strictness 10 | Linux (with editor) and Windows under Wine (editor skipped as before): SUCCESS |
+| `tools/fuzz_parsers.cpp` (ASan/UBSan, float-cast-overflow) | 36 000 mutated inputs including kits, song / chain / outputs keys, stereo sliced samples, recording and track outputs while playing, host relocation, detection on mutated WAVs: no crash, 0 runtime errors |
+| CPU | stress test A/B with 1.3.1 on the same VM: averages within the run-to-run spread (worst case 9.3-10.3 % vs 9.6 %) |
+| MIDI clock end to end: Linux standalone under JACK (dummy driver, 1024-sample period), clock from a JACK client (`tools/jack_clock_test.c`), output recorded and compared with the engine driven by the ideal clock position (`tools/clock_ref.cpp`) | Start: the 14 s recording is bit-identical (0 samples differ). Stop at 4 s, Continue with song position 33 at 6 s: bit-identical. The comparison needs the standalone's own engine time: the engine's timing of events that fall exactly on an integer sample depends on its absolute time (documented since 1.2.0; the 1.3.1 engine behaves the same), so the reference is searched over engine time offsets (found: 3.75 s). With a 256-sample period the VM produced xruns (UI rendered in software on 2 cores) and the recording then differed, as it must |
+| Windows exe under Wine, real mouse and keyboard | a stereo WAV with 4 cue points written into the library auto-loads as stereo with 4 slice points; AUTO; DETECT finds 8 points 1 ms before the 8 hits; RESAMPLE MAIN, 1 BAR, NOW while playing: 87 273 samples (1 bar at 132 BPM), stereo, written to Library/Sounds/Resampled and loaded onto track 1; + NEW category, SAVE KIT (3 samples written into "Break Kit.samples"), factory METAL loaded, the user kit loaded back: all 8 tracks and their samples restored; CHN, P2 P3 P2 P4: played in that order, looping, at each pattern's tempo; SONG: two rows (P2 x2, P4 with track 1 muted), SNG, PLAY: rows in order with the repeat count shown, looping |
+
+Not verified here: clock out to a real MIDI port (no MIDI device in this VM or in Wine; the tick generator is tested,
+the sending thread and RtMidi output are not); multi-out and the song in Ableton Live itself (minimal VST3 host and
+pluginval only); the plugin's LAB > PROJECT > OUTPUTS view on screen (the standalone, where it is hidden, was checked).
 
 ## E. Fixed in 1.3.1
 
@@ -230,7 +257,7 @@ Host sync: 60 s of tempo automation between 80 and 160 BPM with loop jumps: the 
 0.37 beats after it, with a 13-step polymeter track and tracks at 1/4x and 3/2x speed: the trigs (track, time,
 velocity, conditional trigs included) are the same as when the song plays through from the start, within 1 sample.
 
-## 3. Plugin validation (1.3.1 binaries)
+## 3. Plugin validation (2.0.0 binaries)
 
 - pluginval, strictness 10, Linux build, full suite including editor and fuzz tests: SUCCESS
 - pluginval, strictness 10, Windows build under Wine, editor tests skipped (under Wine the editor test times out for

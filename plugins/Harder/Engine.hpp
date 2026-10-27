@@ -285,16 +285,35 @@ struct MDuo {
 // reversed, once or looping from LOOP; TUNE/FINE, the trig NOTE and pitch LFO change the rate. 4-point Hermite
 // interpolation at the sample's own rate. Short fades only where a cut would click: 32 samples in when playback does
 // not start at the sample's first frame, 64 samples out before a one-shot END that is not the sample's end.
+// Slices (SLCS, p[51]): the sample is cut into 8/16/32/64 equal parts or at its slice points (AUTO); SLCE (p[52])
+// picks one (0 = the trig's step number), and STRT / END / LOOP then apply inside that slice.
+// Stereo samples play both channels (tick returns the left one, outR holds the right one).
 struct MSmp {
-  int slot = 0, mode = 0; bool run = false, fadeOut = false;
-  double pos = 0, inc = 1, a = 0, b = 0, lp = 0, lev = 1; int fadeIn = 0, fadeN = 0;
+  int slot = 0, mode = 0; bool run = false, fadeOut = false, st = false;
+  double pos = 0, inc = 1, a = 0, b = 0, lp = 0, lev = 1, outR = 0; int fadeIn = 0, fadeN = 0;
+  int step = -1;   // step of the trig being played (set before control), -1 = not from the sequencer
   const SampleData* cur(const SampleData* const* tab) const { return tab ? tab[slot] : nullptr; }
+  // the frame range [lo, hi) of the selected slice (the whole sample without slices)
+  static void sliceRange(const SampleData& s, int slc, int sel, int step, double& lo, double& hi) {
+    const int n = s.len; lo = 0; hi = n;
+    if (slc <= 0) return;
+    const bool pts = slc >= 5 && !s.slices.empty();
+    const int ns = pts ? (int)s.slices.size() : slc >= 5 ? 16 : (8 << (slc - 1));
+    int k = sel > 0 ? (sel - 1) % ns : (step >= 0 ? step % ns : 0);
+    if (pts) { lo = s.slices[k]; hi = k + 1 < ns ? s.slices[k + 1] : n; }
+    else { lo = std::floor((double)k * n / ns); hi = std::floor((double)(k + 1) * n / ns); }
+    if (hi < lo + 2) hi = std::min((double)n, lo + 2);
+  }
   void ctl(const double* e, double pm, double sr, const SampleData* const* tab) {
     slot = (int)clampd(jsround(e[2]), 0, NSLOT - 1); mode = (int)clampd(jsround(e[5]), 0, 3);
     lev = mpow(clampd(e[7], 0, 127) / 100, 2);
-    const SampleData* s = cur(tab); if (!s || s->len < 2) { a = b = lp = 0; return; }
-    const double n = s->len;
-    a = std::floor(clampd(e[3], 0, 127) / 127 * (n - 1)); b = std::max(a + 1, std::floor(clampd(e[4], 0, 127) / 127 * n));
+    const SampleData* s = cur(tab); if (!s || s->len < 2) { a = b = lp = 0; st = false; return; }
+    st = s->stereo();
+    const double n = s->len; double lo = 0, hi = n;
+    const int slc = (int)clampd(jsround(e[51]), 0, 5);
+    if (slc > 0) sliceRange(*s, slc, (int)clampd(jsround(e[52]), 0, 64), step, lo, hi);
+    const double L = hi - lo;
+    a = lo + std::floor(clampd(e[3], 0, 127) / 127 * (L - 1)); b = std::max(a + 1, lo + std::floor(clampd(e[4], 0, 127) / 127 * L));
     const double lf = clampd(e[6], 0, 127) / 127;
     lp = (mode == 3) ? b - lf * (b - a) : a + lf * (b - a);
     inc = s->rate / sr * pm * exp2j((e[0] + e[1] / 64) / 12);
@@ -307,17 +326,21 @@ struct MSmp {
     fadeN = (mode == 1 || mode == 3) ? (b < (s ? s->len : 0) ? 32 : 0) : (a > 0 ? 32 : 0); fadeIn = 0;
   }
   static inline double at(const float* x, int n, int i) { return (i < 0 || i >= n) ? 0.0 : (double)x[i]; }
-  double tick(const SampleData* const* tab) {
-    if (!run) return 0;
-    const SampleData* s = cur(tab); if (!s || s->len < 2) { run = false; return 0; }
-    const float* x = s->d.data(); const int n = s->len;
-    const int i = (int)std::floor(pos); const double f = pos - i;
+  static inline double herm(const float* x, int n, int i, double f) {
     const double y0 = at(x, n, i - 1), y1 = at(x, n, i), y2 = at(x, n, i + 1), y3 = at(x, n, i + 2);
     const double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-    double y = ((c3 * f + c2) * f + c1) * f + y1;
-    if (fadeIn < fadeN) { y *= (fadeIn + 1.0) / (fadeN + 1.0); fadeIn++; }
+    return ((c3 * f + c2) * f + c1) * f + y1;
+  }
+  double tick(const SampleData* const* tab) {
+    if (!run) { outR = 0; return 0; }
+    const SampleData* s = cur(tab); if (!s || s->len < 2) { run = false; outR = 0; return 0; }
+    const float* x = s->d.data(); const int n = s->len;
+    const int i = (int)std::floor(pos); const double f = pos - i;
+    double y = herm(x, n, i, f), yR = st && s->stereo() ? herm(s->dR.data(), n, i, f) : 0;
+    double g = 1;
+    if (fadeIn < fadeN) { g = (fadeIn + 1.0) / (fadeN + 1.0); y *= g; fadeIn++; }
     const bool rev = mode == 1 || mode == 3;
-    if (fadeOut) { const double left = (rev ? pos - a : b - pos) / inc; if (left < 64) y *= std::max(0.0, left / 64); }
+    double g2 = 1; if (fadeOut) { const double left = (rev ? pos - a : b - pos) / inc; if (left < 64) { g2 = std::max(0.0, left / 64); y *= g2; } }
     if (!rev) {
       pos += inc;
       if (pos >= b) { if (mode == 2) { const double L = std::max(1.0, b - lp); pos = lp + std::fmod(pos - b, L); } else run = false; }
@@ -325,6 +348,7 @@ struct MSmp {
       pos -= inc;
       if (pos < a) { if (mode == 3) { const double L = std::max(1.0, lp - a); pos = lp - std::fmod(a - pos, L); if (pos >= b) pos = b - 1; } else run = false; }
     }
+    outR = st ? yR * g * g2 * lev : 0;
     return y * lev;
   }
   bool alive() const { return run; }
@@ -391,6 +415,8 @@ struct Voice {
   double dcx = 0, dcy = 0; int quiet = 0;
   double lfoPh = 0; bool lfoRun = true; double lfoV = 0, lfoRnd = 0, lfoPrevPh = 0;
   double peak = 0;
+  // right channel of a stereo sample (SAMPLE machine): its own filter, comb, rate-reduction hold, DC blocker, declick
+  SVF flt2; std::vector<float> comb2; int cw2 = 0; double srrH2 = 0, dcx2 = 0, dcy2 = 0, dcl2 = 0, out2 = 0;
 
   // Everything the web `new Voice(sr, tr)` sets. A reused Voice (UI preview engine, sample-rate change) must
   // start from exactly this state, or sample-rate-reduction/bit/filter/comb/LFO state leaks into the next render.
@@ -410,6 +436,7 @@ struct Voice {
     dcx = 0; dcy = 0; quiet = 0;
     lfoPh = 0; lfoRun = true; lfoV = 0; lfoRnd = 0; lfoPrevPh = 0;
     peak = 0;
+    flt2 = SVF(); comb2.assign(comb.size(), 0.f); cw2 = 0; srrH2 = 0; dcx2 = dcy2 = 0; dcl2 = 0; out2 = 0;
     setMachine(M_SUB);
   }
   void setMachine(int m) {
@@ -429,12 +456,13 @@ struct Voice {
     }
   }
   inline void control(const Engine& eng);
-  inline void trig(const Engine& eng, const double* base, const Locks* locks, double vel, const Slide* sl);
+  inline void trig(const Engine& eng, const double* base, const Locks* locks, double vel, const Slide* sl, int step = -1);
   void choke() { if (active) aSt = 5; }
   inline void applyLocks(const Engine& eng, const Locks* L, const Slide* sl);
   void liveParam(int i, double v) { if (!lockMask[i]) p[i] = v; }
   void hardReset() {   // numeric blow-up guard: silence and clear every state that could hold NaN
     active = false; out = 0; dcl = 0; dcx = dcy = 0; flt = SVF(); std::fill(comb.begin(), comb.end(), 0.f); srrH = 0; mach.reset(mid);
+    out2 = 0; dcl2 = 0; dcx2 = dcy2 = 0; flt2 = SVF(); std::fill(comb2.begin(), comb2.end(), 0.f); srrH2 = 0;
   }
 };
 
@@ -511,10 +539,23 @@ struct Feedback {   // engine -> UI, written by the audio thread only
   std::atomic<bool> playing{ false }; std::atomic<uint32_t> fired[NT]; std::atomic<float> peak[NT];
   std::atomic<float> mpeak{ 0 }; std::atomic<float> gr{ 1 }; std::atomic<float> duckG{ 1 }; std::atomic<uint32_t> meterSeq{ 0 };
   std::atomic<double> posTime[NTR]; std::atomic<double> now{ 0 };
+  std::atomic<int> arrRow{ -1 }, arrRep{ 0 }, rowMute{ 0 }, recState{ 0 }; std::atomic<int64_t> recN{ 0 }, recLen{ 0 };
   Feedback() { for (int i = 0; i < NTR; i++) { pos[i] = -1; posTime[i] = 0; } for (int i = 0; i < NT; i++) { fired[i] = 0; peak[i] = 0; } }
 };
 
 struct Track { int m = M_SUB; double p[NP]; };
+
+// Song / chain: rows of patterns played in order. A chain is rows with one repeat each that loop; a song row can
+// also mute tracks (bits 0-7, added to the mutes) and set the tempo (bpm 0 = the pattern's own).
+constexpr int NROW = 128;
+struct ArrRow { int8_t pat = 0; uint8_t reps = 1; uint8_t mute = 0; float bpm = 0; };
+enum ArrMode { ARR_OFF = 0, ARR_CHAIN = 1, ARR_SONG = 2 };
+struct Arrangement { int mode = ARR_OFF; int n = 0; bool loop = true; int start = 0; ArrRow rows[NROW]; };
+
+// Resampling: the main output or one track (after pan and volume, before the master bus) into a buffer the main
+// thread owns. Starts at the next pattern start (or at once), stops after `len` samples.
+enum RecState { REC_IDLE = 0, REC_WAIT = 1, REC_ON = 2, REC_DONE = 3 };
+struct Recorder { float* L = nullptr; float* R = nullptr; int64_t cap = 0, n = 0, len = 0; int src = -1; int state = REC_IDLE; double steps = 0; };
 
 struct Engine {
   double sr = 48000; int64_t time = 0; bool playing = false; double bpm = 125, swing = 50, stepLen = 0;
@@ -552,6 +593,19 @@ struct Engine {
   // optional per-track dry outputs (post voice chain, pre pan/vol), may be null
   float* stems[NT] = { nullptr };
   bool skipMaster = false;   // UI preview renders: voices only
+  // per-track outputs (plugin multi-out): a routed track leaves the main mix for its own stereo pair, delayed by the
+  // limiter's look-ahead so it stays aligned with the main output. Set per block by the plugin (nullptr = main mix).
+  float* tout[NT][2] = {}; bool anyRouted = false; double rout[NT][2] = {};
+  std::vector<float> tdl[NT][2]; int tdw = 0;
+  Recorder rec; double recL = 0, recR = 0;
+  // song / chain
+  Arrangement arr; int arrRow = 0, arrRep = 0; uint8_t rowMute = 0, wrapMute = 0; int wrapRow = 0, wrapRep = 0; bool wrapStop = false, wrapNewRow = false;
+  // the row mutes for a step at time t: steps of the next row are scheduled before the wrap commits
+  uint8_t rowMuteFor(double t) const { return (wrapAt >= 0 && t >= wrapAt - 1e-6) ? wrapMute : rowMute; }
+  // song / chain: a new row's tempo starts exactly at the wrap, also for steps scheduled before it commits
+  // (pattern mode keeps the web engine's behaviour: the new tempo applies from the commit)
+  double wrapStepLen = 0, wrapBpm = 0;
+  double stepLenFor(double t) const { return (wrapStepLen > 0 && wrapAt >= 0 && t >= wrapAt - 1e-6) ? wrapStepLen : stepLen; }
   void (*dbgTrig)(int tr, double t, double vel) = nullptr;   // test hook
   // export hook (web engine onEvent): event time for sequenced hits, current time otherwise
   void (*onTrig)(void* ctx, int tr, double t, double vel) = nullptr; void* onTrigCtx = nullptr;
@@ -581,6 +635,9 @@ struct Engine {
     laW = 0; laS = 1; laSum = LA + 1; laRel = dk(0.12, sr);
     dq.assign(LA + 2, 0); dqv.assign(LA + 2, 0.f); dqH = dqT = laN = 0;
     meterN = 0; mpeak = 0; idleN = 0; fxIdle = false; hostSync = false;
+    for (int t = 0; t < NT; t++) for (int c = 0; c < 2; c++) { tdl[t][c].assign(LA + 1, 0.f); tout[t][c] = nullptr; }
+    tdw = 0; anyRouted = false; rec = Recorder(); fb.recState.store(REC_IDLE);
+    arrRow = 0; arrRep = 0; rowMute = 0; wrapStop = false; wrapNewRow = false; fb.arrRow.store(-1); fb.rowMute.store(0);
     setStepLen();
   }
 
@@ -643,23 +700,71 @@ struct Engine {
       default: { if (c < 9 || c >= NCOND) return true; return (tloop[tr] % COND_B[c]) == COND_A[c] - 1; }
     }
   }
+  // ---------- song / chain ----------
+  bool arrOn() const { return arr.mode != ARR_OFF && arr.n > 0; }
+  int64_t rowLen(int r) const { return (int64_t)std::max(1, patterns[arr.rows[r].pat].mlen) * std::max(1, (int)arr.rows[r].reps); }
+  // the position after the loop that ends now; false at the end of a song that stops (row -1: start at the first row)
+  bool arrNext(int& row, int& rep) const {
+    if (row < 0 || row >= arr.n) { row = 0; rep = 0; return true; }
+    if (++rep >= std::max(1, (int)arr.rows[row].reps)) { rep = 0; if (++row >= arr.n) { if (!arr.loop) return false; row = 0; } }
+    return true;
+  }
+  void arrApplyRow(int r, bool tempo = true) {
+    if (r < 0 || r >= arr.n) return;
+    rowMute = arr.mode == ARR_SONG ? arr.rows[r].mute : 0;
+    const double rb = arr.mode == ARR_SONG ? arr.rows[r].bpm : 0;
+    if (tempo && rb >= 20 && !hostSync) { bpm = std::min(300.0, rb); setStepLen(); }
+    fb.arrRow.store(r, std::memory_order_relaxed); fb.rowMute.store(rowMute, std::memory_order_relaxed);
+  }
+  void setArrangement(const Arrangement& a) {
+    const bool was = arrOn(); arr = a; arr.n = std::max(0, std::min(NROW, arr.n));
+    for (int r = 0; r < arr.n; r++) { ArrRow& w = arr.rows[r]; if (w.pat < 0 || w.pat >= NPAT) w.pat = 0; if (w.reps < 1) w.reps = 1; }
+    if (!arrOn()) { rowMute = 0; fb.arrRow.store(-1); fb.rowMute.store(0); return; }
+    if (playing && !was) { arrRow = -1; arrRep = 0; }   // switched on while playing: the first row follows the current loop
+    else if (arrRow >= arr.n) { arrRow = arr.n - 1; arrRep = 0; }
+    if (arrRow >= 0 && playing) { rowMute = arr.mode == ARR_SONG ? arr.rows[arrRow].mute : 0; fb.rowMute.store(rowMute); }
+    if (!playing) { rowMute = 0; fb.rowMute.store(0); }
+  }
   void commitWrap() {
     const bool changed = wrapPat != cur;
     cur = wrapPat; mloops = wrapLoops; wrapAt = -1;
+    const bool on = arrOn(), rowCh = on && (wrapRow != arrRow || wrapNewRow);
+    if (on) { arrRow = wrapRow; arrRep = wrapRep; fb.arrRep.store(arrRep, std::memory_order_relaxed); }
     if (changed) { applyPatTempo(); fb.cur.store(cur, std::memory_order_relaxed); fb.cue.store(-1, std::memory_order_relaxed); }
+    if (rowCh) arrApplyRow(arrRow, false);
+    if (wrapStepLen > 0) { if (!hostSync && std::fabs(bpm - wrapBpm) > 1e-9) { bpm = wrapBpm; setStepLen(); } wrapStepLen = 0; }
+    if (wrapStop) { wrapStop = false; stopSeq(); }
   }
   void masterStep() {
     const double Tm = mNext;
     if (mcount > 0 && mstep == 0) {
       if (wrapAt >= 0) commitWrap();
       wrapAt = Tm; std::memset(tReset, 0, sizeof tReset);
-      if (cue >= 0) { wrapPat = cue; wrapLoops = 0; wrapSwitch = true; cue = -1; }
+      wrapStop = false; wrapNewRow = false; wrapRow = arrRow; wrapRep = arrRep; wrapMute = rowMute;
+      if (cue >= 0) { wrapPat = cue; wrapLoops = 0; wrapSwitch = true; cue = -1; }   // a cue takes one loop; the song resumes after it
+      else if (arrOn()) {
+        int r = arrRow, k = arrRep;
+        if (!arrNext(r, k)) { wrapStop = true; wrapPat = cur; wrapLoops = mloops + 1; wrapSwitch = false; }
+        else {
+          wrapRow = r; wrapRep = k; wrapPat = arr.rows[r].pat; wrapNewRow = k == 0; wrapMute = arr.mode == ARR_SONG ? arr.rows[r].mute : 0;
+          // a new song row starts its loop count again; in a chain only a different pattern does
+          if (wrapPat != cur || (wrapNewRow && arr.mode == ARR_SONG)) { wrapLoops = 0; wrapSwitch = true; } else { wrapLoops = mloops + 1; wrapSwitch = false; }
+        }
+      }
       else { wrapPat = cur; wrapLoops = mloops + 1; wrapSwitch = false; }
+      wrapStepLen = 0;
+      if (arrOn() && !hostSync) {
+        double nb = bpm;
+        if (wrapPat != cur && patterns[wrapPat].bpm > 0) nb = patterns[wrapPat].bpm;
+        if (wrapNewRow && arr.mode == ARR_SONG && arr.rows[wrapRow].bpm >= 20) nb = std::min(300.0, (double)arr.rows[wrapRow].bpm);
+        wrapBpm = nb; wrapStepLen = sr * 60 / nb / 4;
+      }
     }
     if (Ev* e = allocEv()) { e->time = Tm; e->type = EV_MPOS; e->sp = (int)mstep; pushEv(e); }
     const Pattern& P = patterns[patIdxFor(Tm)];
     mstep = (mstep + 1) % std::max(1, P.mlen);
-    mcount++; mNext += stepLen; mSched = mNext - 5 * stepLen; mIndexNext += 1;
+    const double msl = stepLenFor(mNext);
+    mcount++; mNext += msl; mSched = mNext - 5 * msl; mIndexNext += 1;
   }
   void scheduleTrack(int tr) {
     double t = tNext[tr];
@@ -670,7 +775,7 @@ struct Engine {
     }
     const int pi = patIdxFor(t); const Pattern& P = patterns[pi];
     const int sc = P.scl[tr] < 0 || P.scl[tr] > 6 ? 4 : P.scl[tr];
-    const double sl = stepLen / SPEED_X[sc]; const int len = std::max(1, P.len[tr]); const int sp = (int)(tpos[tr] % len);
+    const double sl = stepLenFor(t) / SPEED_X[sc]; const int len = std::max(1, P.len[tr]); const int sp = (int)(tpos[tr] % len);
     const double t0 = t + ((tcount[tr] & 1) ? (swing - 50) / 50 * sl : 0);
     const Step& st = P.steps[tr][sp];
     bool fired = false;
@@ -715,7 +820,7 @@ struct Engine {
         if (n && dist > 0) { slide.n = n; slide.dur = dist * sl; slide.t0 = tt; slide.hasT0 = true; hasSlide = true; }
       }
     }
-    const bool audible = !mutes[tr] && (solo < 0 || solo == tr);
+    const bool audible = !mutes[tr] && !((rowMuteFor(t0) >> tr) & 1) && (solo < 0 || solo == tr);
     if (st.tl) {
       if (audible) if (Ev* e = allocEv()) {
         e->time = tt; e->type = EV_TLOCK; e->tr = (int8_t)tr; e->hasL = L && L->any(); if (e->hasL) e->L = *L;
@@ -727,9 +832,9 @@ struct Engine {
     const uint8_t type = audible ? EV_TRIG : (duckSrc == tr + 1 ? EV_DUCK : 255);
     if (type == 255) return true;
     Ev* e = allocEv(); if (!e) return true;
-    e->type = type; e->tr = (int8_t)tr; e->vel = vel; e->base = tt;
+    e->type = type; e->tr = (int8_t)tr; e->vel = vel; e->base = tt; e->sp = sp;
     if (rt > 0 && rt < 8) {
-      const double spacing = RTRG_ST[rt] * stepLen, span = RLEN_ST[(int)clampd(jsround(g(47)), 0, 5)] * sl;
+      const double spacing = RTRG_ST[rt] * stepLenFor(t0), span = RLEN_ST[(int)clampd(jsround(g(47)), 0, 5)] * sl;
       e->n = std::max(1, (int)std::floor(span / spacing + 1e-6)); e->spacing = spacing; e->fade = g(46) / 64; e->retrig = true;
     } else { e->n = 1; e->spacing = 0; e->fade = 0; e->retrig = false; }
     e->k = 0; e->time = tt;
@@ -756,17 +861,17 @@ struct Engine {
         fb.posPat.store(ev.pat, std::memory_order_relaxed);
         if (ev.fired && ev.tr < 8) fb.fired[ev.tr].fetch_add(1, std::memory_order_relaxed);
         return;
-      case EV_MPOS: return;
+      case EV_MPOS: if (ev.sp == 0 && rec.state == REC_WAIT) recStart(); return;
       case EV_DUCK: duckTrig(); return;
       case EV_FX: applyFx(ev); return;
       case EV_TLOCK: voices[ev.tr].applyLocks(*this, ev.hasL ? &ev.L : nullptr, ev.hasSlide ? &ev.slide : nullptr); return;
-      case EV_TRIG: trigTrack(ev.tr, ev.hasL ? &ev.L : nullptr, hitVel(ev), ev.hasSlide ? &ev.slide : nullptr, ev.time); return;
+      case EV_TRIG: trigTrack(ev.tr, ev.hasL ? &ev.L : nullptr, hitVel(ev), ev.hasSlide ? &ev.slide : nullptr, ev.time, ev.sp); return;
     }
   }
-  void trigTrack(int tr, const Locks* L, double vel, const Slide* sl = nullptr, double evTime = std::numeric_limits<double>::quiet_NaN()) {
+  void trigTrack(int tr, const Locks* L, double vel, const Slide* sl = nullptr, double evTime = std::numeric_limits<double>::quiet_NaN(), int step = -1) {
     Voice& v = voices[tr]; const double* base = tracks[tr].p; const int grp = (int)jsround(base[22]);
     if (grp > 0) for (int o = 0; o < NT; o++) if (o != tr && (int)jsround(tracks[o].p[22]) == grp) voices[o].choke();
-    v.trig(*this, base, L, vel, sl);
+    v.trig(*this, base, L, vel, sl, step);
     if (dbgTrig) dbgTrig(tr, (double)time, vel);
     if (onTrig) onTrig(onTrigCtx, tr, std::isnan(evTime) ? (double)time : evTime, vel);
     if (duckSrc == tr + 1) duckTrig();
@@ -798,14 +903,17 @@ struct Engine {
   void play(double delay = 64) {
     playing = true; clearQueue();
     const double t = (double)time + delay; origin = t;
-    if (cue >= 0) { cur = cue; cue = -1; applyPatTempo(); fb.cur.store(cur); fb.cue.store(-1); }
+    if (arrOn()) {   // song / chain: from its start row
+      cue = -1; fb.cue.store(-1); arrRow = std::max(0, std::min(arr.n - 1, arr.start)); arrRep = 0; fb.arrRep.store(0);
+      cur = arr.rows[arrRow].pat; applyPatTempo(); fb.cur.store(cur); arrApplyRow(arrRow);
+    } else if (cue >= 0) { cur = cue; cue = -1; applyPatTempo(); fb.cur.store(cur); fb.cue.store(-1); }
     for (int tr = 0; tr < NTR; tr++) { tNext[tr] = t; tSched[tr] = t - 0.5 * stepLen; tpos[tr] = 0; tloop[tr] = 0; tcount[tr] = 0; tReset[tr] = 0; lastCond[tr] = 0; }
-    mNext = t; mSched = t - 5 * stepLen; mstep = 0; mcount = 0; mloops = 0; wrapAt = -1;
+    mNext = t; mSched = t - 5 * stepLen; mstep = 0; mcount = 0; mloops = 0; wrapAt = -1; wrapStepLen = 0;
     std::memcpy(mEff, master, sizeof master); std::memset(mLock, 0, sizeof mLock); masterCtl();
     fb.playing.store(true);
   }
   void stopSeq() {
-    playing = false; clearQueue(); wrapAt = -1;
+    playing = false; clearQueue(); wrapAt = -1; wrapStop = false; wrapStepLen = 0; rowMute = 0; fb.rowMute.store(0, std::memory_order_relaxed);
     std::memcpy(mEff, master, sizeof master); std::memset(mLock, 0, sizeof mLock); masterCtl();
     for (int t = 0; t < NTR; t++) fb.pos[t].store(-1, std::memory_order_relaxed);
     fb.playing.store(false);
@@ -813,7 +921,7 @@ struct Engine {
   void msgStop() { if (!playing) for (Voice& v : voices) v.choke(); stopSeq(); }
   void msgCue(int i) { if (i < 0 || i >= NPAT) return; if (playing) { cue = i; fb.cue.store(i); } else { cur = i; fb.cur.store(i); } }
   void msgMute(int tr, bool v) { mutes[tr] = v ? 1 : 0; }
-  void audition(int tr, double vel, const Locks* L) { trigTrack(tr, L, vel > 0 ? vel : 110); }
+  void audition(int tr, double vel, const Locks* L, int step = -1) { trigTrack(tr, L, vel > 0 ? vel : 110, nullptr, std::numeric_limits<double>::quiet_NaN(), step); }
   void roll(int tr, bool on, double st, double vel, const Locks* L) {
     if (on) {
       const double sp = std::max(16.0, st * stepLen);
@@ -841,12 +949,30 @@ struct Engine {
   void relocate(int64_t s0, double tS) {
     playing = true; clearQueue(); hostSync = true;
     for (Roll& r : rolls) if (r.on) r.next = tS;
+    int64_t sl = s0;   // position counted from the start of what plays now (the song row, or bar 1)
+    if (arrOn()) {     // song / chain: the row at this host position
+      int64_t total = 0; for (int r = 0; r < arr.n; r++) total += rowLen(r);
+      int64_t q = s0 < 0 ? 0 : s0;
+      if (q >= total) {
+        if (!arr.loop) {   // after the end of a song that stops: silent until the host goes back
+          playing = false; mIndexNext = (double)s0; rowMute = 0; fb.rowMute.store(0); fb.playing.store(false);
+          for (int t = 0; t < NTR; t++) fb.pos[t].store(-1, std::memory_order_relaxed);
+          return;
+        }
+        q %= total;
+      }
+      int r = 0; while (r < arr.n - 1 && q >= rowLen(r)) { q -= rowLen(r); r++; }
+      arrRow = r; arrRep = (int)(q / std::max(1, patterns[arr.rows[r].pat].mlen)); cur = arr.rows[r].pat;
+      fb.cur.store(cur, std::memory_order_relaxed); fb.arrRep.store(arrRep); arrApplyRow(r);
+      sl = q;
+    }
     const Pattern& P = patterns[cur];
     const int ml = std::max(1, P.mlen);
-    int64_t loops = s0 / ml, m = s0 % ml; if (m < 0) { m += ml; loops--; }
+    int64_t loops = sl / ml, m = sl % ml; if (m < 0) { m += ml; loops--; }
     if (loops < 0) loops = 0;
     const double loopStart = tS - m * stepLen; origin = loopStart;
     const bool atWrap = (m == 0 && loops > 0);
+    if (arrOn() && atWrap) arrRep = (int)loops - 1;   // the wrap logic moves on to the next repeat
     for (int tr = 0; tr < NTR; tr++) {
       const double sx = SPEED_X[P.scl[tr] < 0 || P.scl[tr] > 6 ? 4 : P.scl[tr]], sl = stepLen / sx; const int64_t len = std::max(1, P.len[tr]);
       const int64_t K = (int64_t)std::ceil(ml * sx - 1e-9);                     // track steps per master loop
@@ -860,7 +986,7 @@ struct Engine {
       }
       tSched[tr] = tNext[tr] - 0.5 * sl;
     }
-    mNext = tS; mSched = tS - 5 * stepLen; wrapAt = -1;
+    mNext = tS; mSched = tS - 5 * stepLen; wrapAt = -1; wrapStepLen = 0;
     if (atWrap) { mstep = 0; mcount = 1; mloops = loops - 1; }
     else { mstep = m; mcount = m; mloops = loops; }
     mIndexNext = (double)s0;
@@ -905,6 +1031,38 @@ struct Engine {
     } else if (std::fabs(diff) > 0.25) warp(diff);
   }
   void internalPlay() { hostSync = false; play(); }
+
+  // ---------- resampling ----------
+  // buffers owned by the main thread; steps 0 = one loop of the pattern that plays when recording starts
+  void recArm(float* L, float* R, int64_t cap, int src, double steps, bool now) {
+    rec = Recorder(); rec.L = L; rec.R = R; rec.cap = cap; rec.src = src; rec.steps = steps;
+    rec.state = REC_WAIT; fb.recN.store(0); fb.recState.store(REC_WAIT);
+    if (now) recStart();
+  }
+  void recStart() {
+    const double st = rec.steps > 0 ? rec.steps : std::max(1, patterns[patIdxFor((double)time)].mlen);
+    rec.len = std::min(rec.cap, (int64_t)jsround(st * stepLen)); rec.n = 0; rec.state = REC_ON;
+    fb.recLen.store(rec.len); fb.recState.store(REC_ON);
+  }
+  // waiting: cancelled; recording: ends now, keeping what is there
+  void recCancel() {
+    if (rec.state == REC_ON && rec.n > 0) { rec.state = REC_DONE; fb.recN.store(rec.n); fb.recState.store(REC_DONE, std::memory_order_release); return; }
+    if (rec.state != REC_DONE) { rec = Recorder(); fb.recState.store(REC_IDLE); }
+  }
+  // after each output sample: routed track outputs (aligned with the limiter) and the recorder
+  inline void sampleTail(int i, double oL, double oR) {
+    if (anyRouted) {
+      for (int t = 0; t < NT; t++) if (tout[t][0]) for (int c = 0; c < 2; c++) { float& d = tdl[t][c][tdw]; tout[t][c][i] = d; d = (float)rout[t][c]; }
+      tdw = tdw + 1 > LA ? 0 : tdw + 1;
+    }
+    if (rec.state == REC_ON) {
+      const double l = rec.src < 0 ? oL : recL, r = rec.src < 0 ? oR : recR;
+      rec.L[rec.n] = (float)l; rec.R[rec.n] = (float)r;
+      if (++rec.n >= rec.len) { rec.state = REC_DONE; fb.recState.store(REC_DONE, std::memory_order_release); }
+      if ((rec.n & 1023) == 0 || rec.state == REC_DONE) fb.recN.store(rec.n, std::memory_order_relaxed);
+    }
+    time++;
+  }
 
   // ---------- audio ----------
   bool allReset() const { for (int tr = 0; tr < NTR; tr++) if (!tReset[tr]) return false; return true; }
@@ -962,8 +1120,8 @@ inline void Voice::control(const Engine& eng) {
     cfb = e[30] / 127 * 0.97; cNorm = std::sqrt(1 - cfb) * 1.2;
   }
 }
-inline void Voice::trig(const Engine& eng, const double* base, const Locks* locks, double vel, const Slide* sl) {
-  dcl += out;
+inline void Voice::trig(const Engine& eng, const double* base, const Locks* locks, double vel, const Slide* sl, int step) {
+  dcl += out; dcl2 += out2; mach.smp.step = step;
   std::memcpy(p, base, sizeof p); std::memset(lockMask, 0, sizeof lockMask);
   if (locks) for (int i = 0; i < NP; i++) if (locks->has(i)) { p[i] = locks->v[i]; lockMask[i] = 1; }
   if (sl) { slide = *sl; if (!sl->hasT0) slide.t0 = (double)eng.time; slideOn = true; } else slideOn = false;
@@ -984,6 +1142,7 @@ inline void Voice::applyLocks(const Engine& eng, const Locks* L, const Slide* sl
 inline void Engine::process(float* OL, float* OR, int n) {
   Voice* V = voices;
   if (masterDirty) masterCtl();   // many automation points in one block -> one recompute
+  anyRouted = false; for (int t = 0; t < NT; t++) if (tout[t][0] && tout[t][1]) anyRouted = true; else tout[t][0] = tout[t][1] = nullptr;
   for (int i = 0; i < n; i++) {
     const double now = (double)time;
     if (playing) {
@@ -1017,45 +1176,84 @@ inline void Engine::process(float* OL, float* OR, int n) {
       }
     }
     duckG = gd;
+    if (anyRouted) for (int t = 0; t < NT; t++) { rout[t][0] = 0; rout[t][1] = 0; }
+    recL = 0; recR = 0;
     double L = 0, R = 0, sD = 0, sR = 0, dL = 0, dR = 0; bool anyActive = false;
     for (int t = 0; t < NT; t++) {
       Voice& v = V[t];
       if (!v.active) { if (stems[t]) stems[t][i] = 0; continue; }
       anyActive = true;
       double x = v.mach.tick(v.sr, v.rnd);
-      if (v.srrInc < 1) { v.srrPh += v.srrInc; if (v.srrPh >= 1) { v.srrPh -= 1; v.srrH = x; } x = v.srrH; }
-      if (v.bitQ != 0) x = jsround(x * v.bitQ) / v.bitQ;
-      if (v.cMix > 0) {
-        float* c = v.comb.data(); const int N = (int)v.comb.size(); double r = v.cw - v.cd; if (r < 0) r += N;
-        const int ri = (int)std::floor(r); const double f = r - ri; const int rj = ri + 1 >= N ? 0 : ri + 1;
-        const double y = x + v.cfb * ((double)c[ri] + ((double)c[rj] - (double)c[ri]) * f); c[v.cw] = (float)y; v.cw = v.cw + 1 >= N ? 0 : v.cw + 1;
-        x = x * (1 - v.cMix) + y * v.cMix * v.cNorm;
+      double xl, xr, xs, ax;
+      if (v.mid == M_SMP && v.mach.smp.st) {   // stereo sample: the same chain on both channels
+        double x2 = v.mach.smp.outR;
+        if (v.srrInc < 1) { v.srrPh += v.srrInc; if (v.srrPh >= 1) { v.srrPh -= 1; v.srrH = x; v.srrH2 = x2; } x = v.srrH; x2 = v.srrH2; }
+        if (v.bitQ != 0) { x = jsround(x * v.bitQ) / v.bitQ; x2 = jsround(x2 * v.bitQ) / v.bitQ; }
+        if (v.cMix > 0) {
+          const int N = (int)v.comb.size(); double r = v.cw - v.cd; if (r < 0) r += N;
+          const int ri = (int)std::floor(r); const double f = r - ri; const int rj = ri + 1 >= N ? 0 : ri + 1;
+          { float* c = v.comb.data(); const double y = x + v.cfb * ((double)c[ri] + ((double)c[rj] - (double)c[ri]) * f); c[v.cw] = (float)y; x = x * (1 - v.cMix) + y * v.cMix * v.cNorm; }
+          { float* c = v.comb2.data(); const double y = x2 + v.cfb * ((double)c[ri] + ((double)c[rj] - (double)c[ri]) * f); c[v.cw] = (float)y; x2 = x2 * (1 - v.cMix) + y * v.cMix * v.cNorm; }
+          v.cw = v.cw + 1 >= N ? 0 : v.cw + 1;
+        }
+        if (v.fSt == 1) { v.fLv += v.fInc / 16; if (v.fLv >= 1) { v.fLv = 1; v.fSt = 2; } } else if (v.fSt == 2) v.fLv *= v.fK;
+        if (!v.fBy) {
+          SVF& fl = v.flt; SVF& f2 = v.flt2; f2.a1 = fl.a1; f2.a2 = fl.a2; f2.a3 = fl.a3; f2.k = fl.k;
+          fl.run(x); x = fl.lp * v.wl + fl.bp * fl.k * v.wb + fl.hp * v.wh; f2.run(x2); x2 = f2.lp * v.wl + f2.bp * f2.k * v.wb + f2.hp * v.wh;
+        }
+        if (v.drvG > 1) { x = sat(x * v.drvG) * v.drvC; x2 = sat(x2 * v.drvG) * v.drvC; }
+        switch (v.aSt) {
+          case 1: v.aLv += v.aInc; if (v.aLv >= 1) { v.aLv = 1; v.aSt = 2; } break;
+          case 2: v.aHold++; if (v.aHold >= v.aHoldN) v.aSt = 3; break;
+          case 3: v.aLv *= v.aK; break;
+          case 5: v.aLv *= v.relK; break;
+        }
+        x *= v.aLv * v.velG; x2 *= v.aLv * v.velG;
+        v.dcy = x - v.dcx + 0.9993 * v.dcy; v.dcx = x; x = v.dcy;
+        v.dcy2 = x2 - v.dcx2 + 0.9993 * v.dcy2; v.dcx2 = x2; x2 = v.dcy2;
+        if (v.dcl != 0 || v.dcl2 != 0) { x += v.dcl; x2 += v.dcl2; v.dcl *= v.dclk; v.dcl2 *= v.dclk; if (std::fabs(v.dcl) < 1e-6 && std::fabs(v.dcl2) < 1e-6) { v.dcl = 0; v.dcl2 = 0; } }
+        if (x != x || x2 != x2 || std::fabs(x) > 1e6 || std::fabs(x2) > 1e6) { x = 0; x2 = 0; v.hardReset(); }
+        v.out = x; v.out2 = x2;
+        xl = x * v.gL; xr = x2 * v.gR; xs = 0.5 * (x + x2); ax = std::max(std::fabs(x), std::fabs(x2));
+      } else {
+        if (v.srrInc < 1) { v.srrPh += v.srrInc; if (v.srrPh >= 1) { v.srrPh -= 1; v.srrH = x; } x = v.srrH; }
+        if (v.bitQ != 0) x = jsround(x * v.bitQ) / v.bitQ;
+        if (v.cMix > 0) {
+          float* c = v.comb.data(); const int N = (int)v.comb.size(); double r = v.cw - v.cd; if (r < 0) r += N;
+          const int ri = (int)std::floor(r); const double f = r - ri; const int rj = ri + 1 >= N ? 0 : ri + 1;
+          const double y = x + v.cfb * ((double)c[ri] + ((double)c[rj] - (double)c[ri]) * f); c[v.cw] = (float)y; v.cw = v.cw + 1 >= N ? 0 : v.cw + 1;
+          x = x * (1 - v.cMix) + y * v.cMix * v.cNorm;
+        }
+        if (v.fSt == 1) { v.fLv += v.fInc / 16; if (v.fLv >= 1) { v.fLv = 1; v.fSt = 2; } } else if (v.fSt == 2) v.fLv *= v.fK;
+        if (!v.fBy) { SVF& fl = v.flt; fl.run(x); x = fl.lp * v.wl + fl.bp * fl.k * v.wb + fl.hp * v.wh; }
+        if (v.drvG > 1) x = sat(x * v.drvG) * v.drvC;
+        switch (v.aSt) {
+          case 1: v.aLv += v.aInc; if (v.aLv >= 1) { v.aLv = 1; v.aSt = 2; } break;
+          case 2: v.aHold++; if (v.aHold >= v.aHoldN) v.aSt = 3; break;
+          case 3: v.aLv *= v.aK; break;
+          case 5: v.aLv *= v.relK; break;
+        }
+        x *= v.aLv * v.velG;
+        v.dcy = x - v.dcx + 0.9993 * v.dcy; v.dcx = x; x = v.dcy;
+        if (v.dcl != 0) { x += v.dcl; v.dcl *= v.dclk; if (std::fabs(v.dcl) < 1e-6) v.dcl = 0; }
+        if (x != x || std::fabs(x) > 1e6) { x = 0; v.hardReset(); }
+        v.out = x;
+        xl = x * v.gL; xr = x * v.gR; xs = x; ax = std::fabs(x);
       }
-      if (v.fSt == 1) { v.fLv += v.fInc / 16; if (v.fLv >= 1) { v.fLv = 1; v.fSt = 2; } } else if (v.fSt == 2) v.fLv *= v.fK;
-      if (!v.fBy) { SVF& fl = v.flt; fl.run(x); x = fl.lp * v.wl + fl.bp * fl.k * v.wb + fl.hp * v.wh; }
-      if (v.drvG > 1) x = sat(x * v.drvG) * v.drvC;
-      switch (v.aSt) {
-        case 1: v.aLv += v.aInc; if (v.aLv >= 1) { v.aLv = 1; v.aSt = 2; } break;
-        case 2: v.aHold++; if (v.aHold >= v.aHoldN) v.aSt = 3; break;
-        case 3: v.aLv *= v.aK; break;
-        case 5: v.aLv *= v.relK; break;
-      }
-      x *= v.aLv * v.velG;
-      v.dcy = x - v.dcx + 0.9993 * v.dcy; v.dcx = x; x = v.dcy;
-      if (v.dcl != 0) { x += v.dcl; v.dcl *= v.dclk; if (std::fabs(v.dcl) < 1e-6) v.dcl = 0; }
-      if (x != x || std::fabs(x) > 1e6) { x = 0; v.hardReset(); }
-      v.out = x;
-      const double xl = x * v.gL, xr = x * v.gR, kd = v.dkAmt;
-      if (kd > 0) { L += xl * (1 - kd); R += xr * (1 - kd); dL += xl * kd; dR += xr * kd; } else { L += xl; R += xr; }
-      sD += x * v.sD; sR += x * v.sR;
-      if (stems[t]) stems[t][i] = (float)x;
-      const double ax = std::fabs(x); if (ax > v.peak) v.peak = ax;
+      const double kd = v.dkAmt;
+      if (anyRouted && tout[t][0]) {   // its own output: ducked full-band, at the main mix's level (x 0.5)
+        const double g = kd > 0 ? (1 - kd) + kd * gd : 1; rout[t][0] = xl * g * 0.5; rout[t][1] = xr * g * 0.5;
+      } else if (kd > 0) { L += xl * (1 - kd); R += xr * (1 - kd); dL += xl * kd; dR += xr * kd; } else { L += xl; R += xr; }
+      if (rec.state == 2 && rec.src == t) { recL = xl; recR = xr; }
+      sD += xs * v.sD; sR += xs * v.sR;
+      if (stems[t]) stems[t][i] = (float)xs;
+      if (ax > v.peak) v.peak = ax;
       if (ax < 2e-5) { if (++v.quiet > 4096 && !v.mach.alive()) v.active = false; } else v.quiet = 0;
-      if (v.aSt == 5 && v.aLv < 1e-4) { v.active = false; v.dcl = 0; v.out = 0; }
+      if (v.aSt == 5 && v.aLv < 1e-4) { v.active = false; v.dcl = 0; v.out = 0; v.dcl2 = 0; v.out2 = 0; }
     }
     if (skipMaster) { OL[i] = (float)L; OR[i] = (float)R; time++; continue; }
     // idle: no voice, no sends, tails decayed -> skip the FX chain (bit-exact zeros otherwise)
-    if (!anyActive) { if (fxIdle) { OL[i] = 0; OR[i] = 0; time++; continue; } }
+    if (!anyActive) { if (fxIdle) { OL[i] = 0; OR[i] = 0; sampleTail(i, 0, 0); continue; } }
     else { idleN = 0; fxIdle = false; }
     if (dFull) { L += dL * gd; R += dR * gd; }
     else {
@@ -1105,7 +1303,7 @@ inline void Engine::process(float* OL, float* OR, int n) {
       for (int k = 0; q && k < 8; k++) q = std::fabs(fdn.lp[k]) < 1e-7;
       if (q) { if (++idleN > (int64_t)sr) fxIdle = true; } else idleN = 0;
     }
-    time++;
+    sampleTail(i, oL, oR);
   }
   meterN += n;
   if (meterN >= 2048) {

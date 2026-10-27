@@ -21,8 +21,8 @@ namespace hd {
 
 struct PlenData { int mlen; int len[NTR]; int scl[NTR]; };
 struct Cmd {
-  enum T : uint8_t { PARAM, MACHINE, TRACKP, STEP, PATTERN, PLEN, BPM, SWING, PLAY, STOP, CUE, FILL, MUTE, SOLO, AUD, ROLL, PANIC, MASTER, LOADDONE, SAMPLE };
-  uint8_t t = 0; int8_t tr = 0; int16_t i = 0; int s = 0; double v = 0, v2 = 0; bool flag = false; const SampleData* ptr = nullptr;
+  enum T : uint8_t { PARAM, MACHINE, TRACKP, STEP, PATTERN, PLEN, BPM, SWING, PLAY, STOP, CUE, FILL, MUTE, SOLO, AUD, ROLL, PANIC, MASTER, LOADDONE, SAMPLE, ARR, REC, RECCANCEL };
+  uint8_t t = 0; int8_t tr = 0; int16_t i = 0; int s = 0; double v = 0, v2 = 0; bool flag = false; const SampleData* ptr = nullptr; float* f1 = nullptr; float* f2 = nullptr;
   union U { U() {} double p[NP]; Step st; Locks L; PlenData pl; struct { double m[NM]; } ms; struct { int cur; double bpm, swing; uint8_t mutes[NT]; } ld; } u;
 };
 
@@ -30,6 +30,7 @@ struct Link {
   std::atomic<bool> busy{ false };
   std::vector<Cmd> q;
   std::unique_ptr<Pattern[]> pat{ new Pattern[NPAT] };   // latest copy of each pattern sent with Cmd::PATTERN
+  Arrangement arr;                                         // latest song / chain sent with Cmd::ARR
   std::atomic<uint32_t> dropped{ 0 };
   bool overflow = false;
   // command counters: pushed (main thread, under the lock) and consumed (applied, skipped as a duplicate pattern, or
@@ -42,6 +43,7 @@ struct Link {
   // returns the command's sequence number (consumed > it means the audio thread is past it), UINT64_MAX if the queue
   // was full and the command dropped (syncAllIfOverflow resends everything)
   uint64_t push(const Cmd& c) { lock(); uint64_t n = UINT64_MAX; if (q.size() < 8000) { q.push_back(c); n = pushed++; } else overflow = true; unlock(); return n; }
+  void pushArr(const Arrangement& a) { lock(); arr = a; Cmd c; c.t = Cmd::ARR; if (q.size() < 8000) { q.push_back(c); pushed++; } else overflow = true; unlock(); }
   void pushPattern(int i, const Pattern& P) { lock(); pat[i] = P; Cmd c; c.t = Cmd::PATTERN; c.i = (int16_t)i; if (q.size() < 8000) { q.push_back(c); pushed++; } else overflow = true; unlock(); }
   // audio thread: never waits. Returns true if something was applied.
   // A pattern copy is 267 KB, so per block at most 2 are applied and at most MAX_CMDS commands (the rest wait for
@@ -84,12 +86,15 @@ struct Link {
       case Cmd::FILL: E.fill = c.flag; break;
       case Cmd::MUTE: E.msgMute(c.tr, c.flag); break;
       case Cmd::SOLO: E.solo = c.tr; break;
-      case Cmd::AUD: E.audition(c.tr, c.v, c.flag ? &c.u.L : nullptr); break;
+      case Cmd::AUD: E.audition(c.tr, c.v, c.flag ? &c.u.L : nullptr, c.s); break;
       case Cmd::ROLL: E.roll(c.tr, c.flag, c.v, c.v2, c.s ? &c.u.L : nullptr); break;
       case Cmd::PANIC: E.panic(); break;
       case Cmd::MASTER: E.loadMaster(c.u.ms.m); E.masterDirty = true; break;
       case Cmd::LOADDONE: E.loadDone(c.u.ld.cur, c.u.ld.bpm, c.u.ld.swing, c.u.ld.mutes); break;
       case Cmd::SAMPLE: E.setSample(c.i, c.ptr); break;
+      case Cmd::ARR: E.setArrangement(arr); break;
+      case Cmd::REC: E.recArm(c.f1, c.f2, (int64_t)c.s, c.tr, c.v, c.flag); break;
+      case Cmd::RECCANCEL: E.recCancel(); break;
     }
   }
 };
@@ -126,6 +131,11 @@ struct Core {
 #endif
   // output level: after the limiter, like a hardware MAIN knob; not part of the project or of exports (dB, <= -80 = off)
   std::atomic<float> outDb{ 0 };
+  std::atomic<uint32_t> outMask{ 0 };   // tracks on their own output pair (plugin multi-out; the standalone ignores it)
+  // MIDI clock (standalone): set by the UI, used by the audio thread
+  std::atomic<bool> clockIn{ false }, clockOut{ false }; std::atomic<int> clockOffsetMs{ 0 };
+  std::atomic<bool> extClock{ false };      // the sequencer follows an external MIDI clock right now
+  std::atomic<double> extBpm{ 0 };
   void applyUiStateDsp() { JVal j; if (parseJson(uiState, j) && j.isObj()) { const double d = j["outDb"].num(0); outDb.store((float)(d < -80 ? -80 : d > 0 ? 0 : d)); } }
 
   Core() { for (auto& h : hostVal) h.store(0); for (auto& d : dirty) d.store(0); for (auto& m : machineOf) m.store(0); for (auto& o : ownUntil) o.store(0); for (auto& c : padMap) for (auto& n : c) n.store(0); }
@@ -223,7 +233,9 @@ struct Core {
   void sendPattern(int pat) { link.pushPattern(pat, S->patterns[pat]); sent[pat] = S->patterns[pat]; }
   void sendPlen(int pat) { const Pattern& P = S->patterns[pat]; sent[pat].mlen = P.mlen; std::memcpy(sent[pat].len, P.len, sizeof P.len); std::memcpy(sent[pat].scl, P.scl, sizeof P.scl); Cmd c; c.t = Cmd::PLEN; c.i = (int16_t)pat; c.u.pl.mlen = P.mlen; std::memcpy(c.u.pl.len, P.len, sizeof P.len); std::memcpy(c.u.pl.scl, P.scl, sizeof P.scl); link.push(c); }
   void sendSimple(uint8_t t, int tr = 0, int i = 0, double v = 0, bool flag = false) { Cmd c; c.t = t; c.tr = (int8_t)tr; c.i = (int16_t)i; c.v = v; c.flag = flag; link.push(c); }
-  void sendAud(int tr, double vel, const Locks* L) { Cmd c; c.t = Cmd::AUD; c.tr = (int8_t)tr; c.v = vel; c.flag = L && L->any(); if (c.flag) c.u.L = *L; link.push(c); }
+  void sendAud(int tr, double vel, const Locks* L, int step = -1) { Cmd c; c.t = Cmd::AUD; c.tr = (int8_t)tr; c.v = vel; c.s = step; c.flag = L && L->any(); if (c.flag) c.u.L = *L; link.push(c); }
+  void sendArr() { link.pushArr(S->arrangement()); }
+  void sendOuts() { uint32_t m = 0; for (int t = 0; t < NT; t++) if (S->outs[t]) m |= 1u << t; outMask.store(m, std::memory_order_relaxed); }
   void sendRoll(int tr, bool on, double st, double vel, const Locks* L) { Cmd c; c.t = Cmd::ROLL; c.tr = (int8_t)tr; c.flag = on; c.v = st; c.v2 = vel; c.s = L && L->any(); if (c.s) c.u.L = *L; link.push(c); }
   void sendMaster() { Cmd c; c.t = Cmd::MASTER; std::memcpy(c.u.ms.m, S->master, sizeof S->master); link.push(c); }
   // sample slots that differ from what the engine has (force: all). The old data stays alive until the engine has
@@ -258,6 +270,7 @@ struct Core {
     for (int tr = 0; tr < NT; tr++) sendMachine(tr);
     sendMaster();
     for (int i = 0; i < NPAT; i++) if (force || !samePattern(sent[i], S->patterns[i])) sendPattern(i);
+    sendArr(); sendOuts();
     Cmd c; c.t = Cmd::LOADDONE; c.u.ld.cur = S->cur; c.u.ld.bpm = S->bpm; c.u.ld.swing = S->swing; std::memcpy(c.u.ld.mutes, S->mutes, NT); link.push(c);
   }
   void syncAllIfOverflow() {

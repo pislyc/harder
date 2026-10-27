@@ -1,10 +1,10 @@
-# HARDER library format (version 1)
+# HARDER library format (version 1, HARDER 2.0)
 
 The HARDER standalone program and the HARDER plugin share one library folder. Any other program — a synth, a
 sound-design tool, a script — can put sounds and grooves there, and HARDER lists them within about two seconds.
 This file is the contract for such programs.
 
-**中文概要：** 库在 `文档\HARDER\Library\`（Linux：`~/.config/HARDER/Library/`）。`Sounds/` 和 `Grooves/` 下的每个子文件夹就是一个分类，直接放在 `Sounds/` 下的文件归到 INBOX。外部软件写一个 WAV 就能被 HARDER 当作 SAMPLE 音色使用；要连同包络、滤波等设置一起交给 HARDER，就再写一个同名的 `.json` 音色文件（格式见下）。请先写成临时文件名，写完再改名。在 HARDER 里勾选 "Auto-load new" 后，新文件或被覆盖的文件会自动载入当前选中的轨道。
+**中文概要：** 库在 `文档\HARDER\Library\`（Linux：`~/.config/HARDER/Library/`）。`Sounds/`、`Grooves/` 和 `Kits/` 下的每个子文件夹就是一个分类，直接放在 `Sounds/` 下的文件归到 INBOX。外部软件写一个 WAV 就能被 HARDER 当作 SAMPLE 音色使用；要连同包络、滤波等设置一起交给 HARDER，就再写一个同名的 `.json` 音色文件（格式见下）。请先写成临时文件名，写完再改名。在 HARDER 里勾选 "Auto-load new" 后，新文件或被覆盖的文件会自动载入当前选中的轨道。
 
 ## Where
 
@@ -13,8 +13,8 @@ This file is the contract for such programs.
 | Windows | `Documents\HARDER\Library\` (the user's Documents folder, `%USERPROFILE%\Documents` unless moved) |
 | Linux | `~/.config/HARDER/Library/` (`$XDG_CONFIG_HOME/HARDER/Library/` if set) |
 
-HARDER creates `Library/`, `Library/Sounds/`, `Library/Grooves/` and a short `README.txt` the first time the user
-library is opened.
+HARDER creates `Library/`, `Library/Sounds/`, `Library/Grooves/`, `Library/Kits/` and a short `README.txt` the first
+time the user library is opened.
 
 ## Layout
 
@@ -25,13 +25,17 @@ Library/
     <category>/<name>.wav             plain WAV: a SAMPLE sound with default settings
     <category>/<name>.json            HARDER sound, any machine
     <category>/<name>.json + <name>.wav   a SAMPLE sound and its sample (the WAV is not listed on its own)
+    Resampled/<name>.wav              RESAMPLE (LAB > SAMPLE) writes its recordings here
   Grooves/
     <name>.json                       UNSORTED
     <category>/<name>.json            HARDER groove (one pattern)
+  Kits/
+    <category>/<name>.json            HARDER kit (eight sounds, optionally the master FX)
+    <category>/<name>.samples/*.wav   the kit's samples (not a category, not listed)
   Trash/                              what HARDER deletes is moved here
 ```
 
-- A category is a folder directly inside `Sounds/` or `Grooves/` (one level; deeper folders are ignored).
+- A category is a folder directly inside `Sounds/`, `Grooves/` or `Kits/` (one level; deeper folders are ignored).
 - The name shown is the `"name"` field of a `.json`, else the file name without its extension.
 - File and folder names are UTF-8 on every system. Characters `\ / : * ? " < > |` are not used by HARDER.
 - Hidden files and names starting with `.` are ignored, so are other extensions (`.tmp`, `.part`, ...).
@@ -48,13 +52,18 @@ HARDER loads it again — handy for "render, listen, tweak, render again".
 ## WAV files
 
 RIFF/WAVE, PCM 8/16/24/32-bit or IEEE float 32/64-bit, `WAVE_FORMAT_EXTENSIBLE` with a PCM or float sub-format,
-any sample rate from 1 kHz to 768 kHz, any channel count. HARDER mixes the channels to mono (the voice path — filter,
-drive, pan — is mono, like the sample tracks of Elektron machines) and keeps the file's rate (the voice resamples
-with 4-point Hermite interpolation). Up to 60 s; longer files are cut at 60 s. Compressed formats (ADPCM, MP3 in
-WAV, ...) and AIFF/FLAC are not read.
+any sample rate from 1 kHz to 768 kHz. Mono and stereo files keep their channels (since 2.0; a stereo sample runs
+through the voice's filter, drive and envelope on both sides, and PAN works as a balance); other channel counts are
+mixed to mono. HARDER keeps the file's rate (the voice resamples with 4-point Hermite interpolation). Up to 60 s;
+longer files are cut at 60 s. Compressed formats (ADPCM, MP3 in WAV, ...) and AIFF/FLAC are not read.
+
+Cue points (`cue ` chunk, `dwSampleOffset`) are slice points: SLCS = AUTO plays the slices between them. HARDER
+writes a sample's slice points back as cue points when it saves a WAV (SAVE SOUND, kits, resampling), so a program
+that marks the hits of a break can hand them over in the file itself.
 
 Inside a project, a sample is stored as 16-bit if the file was 8/16-bit, 24-bit if it was 24/32-bit integer, and
-32-bit float if it was float, so a project renders the same before and after it is saved.
+32-bit float if it was float, so a project renders the same before and after it is saved. A resampled recording is
+stored as 32-bit float.
 
 ## Sound file (`.json` in `Sounds/`)
 
@@ -162,6 +171,15 @@ SAMPLE (`SMP`) in detail:
 The trig NOTE (40) and an LFO on PTCH change the pitch as for every machine. AMP DEC (18) defaults to INF, so the
 sample plays to its END unless the amp envelope is shortened.
 
+Slices (2.0), on the STEP page of the SAMPLE machine only (other machines do not use these indices):
+
+| index | name | meaning |
+|---|---|---|
+| 51 | SLCS | 0 off, 1-4 = 8 / 16 / 32 / 64 equal slices, 5 AUTO = the sample's slice points |
+| 52 | SLCE | 0 = the slice of the trig's step (step n plays slice n, wrapping), 1-64 = that slice |
+
+With slices on, STRT / END / LOOP are positions inside the slice. Lock SLCE on a step to play another slice there.
+
 ## Groove file (`.json` in `Grooves/`)
 
 ```json
@@ -187,13 +205,40 @@ A project (`harder-project.json`, the standalone's `autosave.json`, the state in
 tracks carries its samples, so it can be moved to another computer as one file:
 
 ```json
-"samples": [ { "slot": 0, "id": "715e3411fbbe0b51", "name": "Lower Kick", "rate": 48000, "len": 28800, "fmt": "s24", "data": "<base64>" } ]
+"samples": [ { "slot": 0, "id": "715e3411fbbe0b51", "name": "Lower Kick", "rate": 48000, "len": 28800, "fmt": "s24", "data": "<base64>" },
+             { "slot": 1, "id": "…", "name": "Break", "rate": 44100, "len": 88200, "fmt": "s16", "ch": 2, "slices": [0, 11025, 22050], "data": "<base64>" } ]
 ```
 
-`data` is the mono sample in little-endian `s16`, `s24` (3 bytes) or `f32`, base64-encoded; `id` is a 64-bit FNV-1a
-hash of the rate, the format and the data. The key is only written when a slot is used, so projects without samples
-are unchanged and still open in the web groovebox; a project with SAMPLE tracks does not open there (the web version
-has no SAMPLE machine).
+`data` is the sample in little-endian `s16`, `s24` (3 bytes) or `f32`, base64-encoded, interleaved L R when `ch` is 2
+(`ch` is left out for mono); `slices` are slice start frames, ascending. `id` is a 64-bit FNV-1a hash of the rate, the
+format, the data and (2.0, stereo or sliced samples only) the channel count and slice points: mono samples without
+slices keep the ids they had in 1.x. The key is only written when a slot is used, so projects without samples are
+unchanged and still open in the web groovebox; a project with SAMPLE tracks does not open there (the web version has
+no SAMPLE machine).
+
+Other keys of 2.0, also written only when used (a project that has none of them is byte-for-byte a 1.x / web project;
+the web groovebox ignores them, so such a project still opens there and plays its current pattern):
+
+| key | |
+|---|---|
+| `seq` | `"chain"` or `"song"`: what PLAY plays (absent = the current pattern) |
+| `chain` | pattern indices 0-7, played in order and looped |
+| `song` | `{ "rows": [ { "p": 0-7, "n": repeats 1-99, "mute": [track numbers 1-8], "bpm": 40-300 } ], "loop": true/false, "start": row }`; `mute` and `bpm` are optional (no `bpm` = the pattern's tempo) |
+| `outs` | 8 numbers, 1 = the track plays on its own output in the plugin (Live: Track n) instead of the main mix |
+
+## Kit file (`.json` in `Kits/`)
+
+```json
+{ "format": "harder-kit", "version": 1, "name": "Break Kit",
+  "tracks": [ { "name": "Break", "machine": "SMP", "p": [ ... ], "sample": { "file": "Break Kit.samples/1 Break.wav" } },
+              { "name": "FM Snare", "machine": "ZAP", "p": [ ... ] }, ... 8 entries ],
+  "roles": [ "kick", "snare", ... ], "master": [ 32 values ] }
+```
+
+Each track entry is a sound (same keys as a sound file without `format`); a SAMPLE track's `file` is inside the
+kit's own folder `<kit name>.samples/`. `roles` (the groove generator's track roles) and `master` (the master FX)
+are optional; loading a kit keeps the master volume. Renaming or moving a kit in HARDER moves its samples folder
+and rewrites the references.
 
 ## Example: a script that hands HARDER a sound
 

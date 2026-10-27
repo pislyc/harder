@@ -73,13 +73,15 @@ int main(int argc, char** argv) {
       std::string err; SampleRef s = decodeWav("t", w.data(), w.size(), &err);
       CHECK(s, "decode %d/%d/%d: %s", c.tag, c.bits, c.ch, err.c_str()); if (!s) continue;
       CHECK(s->len == n && s->rate == 44100 && s->fmt == c.fmt, "decode %d/%d header len %d rate %g fmt %d", c.tag, c.bits, s->len, s->rate, s->fmt);
-      double md = 0; for (int i = 0; i < n; i++) md = std::max(md, std::fabs(s->d[i] - (c.ch == 2 ? (l[i] + r[i]) / 2 : l[i])));
+      // 2.0: two channels stay stereo (left in d, right in dR); other counts are mixed to mono
+      CHECK(s->ch == (c.ch == 2 ? 2 : 1) && s->stereo() == (c.ch == 2), "decode %d/%d/%d channels %d", c.tag, c.bits, c.ch, s->ch);
+      double md = 0; for (int i = 0; i < n; i++) { md = std::max(md, std::fabs(s->d[i] - l[i])); if (c.ch == 2) md = std::max(md, std::fabs(s->dR[i] - r[i])); }
       CHECK(md <= c.tol * 1.5 + 2.0 / 8388608, "decode %d/%d/%d max err %g", c.tag, c.bits, c.ch, md);
       // the stored form reloads bit-exactly
-      SampleRef s2 = sampleFromBytes("t", s->rate, s->fmt, s->bytes());
-      CHECK(s2 && s2->id == s->id && s2->d == s->d, "stored form round trip %d/%d", c.tag, c.bits);
+      SampleRef s2 = sampleFromBytes("t", s->rate, s->fmt, s->bytes(), nullptr, s->ch);
+      CHECK(s2 && s2->id == s->id && s2->d == s->d && s2->dR == s->dR, "stored form round trip %d/%d", c.tag, c.bits);
       const std::vector<uint8_t> e = encodeWav(*s); SampleRef s3 = decodeWav("t", e.data(), e.size());
-      CHECK(s3 && s3->d == s->d && s3->id == s->id, "encodeWav round trip %d/%d", c.tag, c.bits);
+      CHECK(s3 && s3->d == s->d && s3->dR == s->dR && s3->id == s->id, "encodeWav round trip %d/%d", c.tag, c.bits);
     }
     std::string err; const uint8_t bad[] = "RIFF\0\0\0\0WAVEjunk";
     CHECK(!decodeWav("x", bad, sizeof bad, &err), "garbage accepted");

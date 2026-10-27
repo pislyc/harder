@@ -10,13 +10,14 @@ plugins/Harder/   Engine.hpp      DSP engine, line-by-line port of the web engin
                   Data.hpp        GENERATED from the web sound + groove library (tools/gen_data.js)
                   Export.hpp      loop / kit export (WAV, MIDI, zip), port of the web export
                   Sample.hpp      SAMPLE machine data: WAV decoding, stored formats, ids, base64 (not in the web app)
-                  Library.hpp     the shared user library (folders = categories, sound / groove files), docs/LIBRARY.md
+                  Library.hpp     the shared user library (folders = categories, sound / groove / kit files), docs/LIBRARY.md
+                  Clock.hpp       MIDI clock follower (alpha-beta tracker) and clock generator (standalone)
                   FileSys.cpp/hpp UTF-8 file helpers (wide-character API on Windows)
                   Control.hpp     standalone keyboard / MIDI-controller mappings (LAB > CONTROL, control.json)
                   HostParams.hpp  parameters exposed to the host
                   HarderShared.hpp lock-free command link UI -> audio, host parameter mirror and ownership
-                  HarderPlugin.cpp DPF plugin (audio thread, Live transport sync, MIDI, state, files)
-                  HarderUI.cpp    NanoVG UI (main face + LAB drawer; AUDIO tab and keyboard in the standalone)
+                  HarderPlugin.cpp DPF plugin (audio thread, Live transport / MIDI clock sync, MIDI, state, track outputs)
+                  HarderUI.cpp    NanoVG UI (main face + LAB drawer: SAMPLE, KITS, SONG...; AUDIO, CONTROL in the standalone)
                   res/            app icon (tools/make_icon.py)
 tools/            equivalence, generator, export, host-parameter, VST3-host, sample/library and CPU tests
 docs/LIBRARY.md   the library format for other programs (sounds, grooves, WAV, parameter tables)
@@ -30,6 +31,10 @@ dpf/              DPF with small patches, each behind a define set in plugins/Ha
                   DPF_RTAUDIO_WASAPI_NO_MF  no Media Foundation: WASAPI at the device mix rate
                   DPF_RTAUDIO_WASAPI_JOIN_THREAD stop/abort wait for the stream thread (reopen race)
                   DPF_WIN_SAVE_DEFAULT_NAME Windows save dialog: suggested name, overwrite prompt
+                  DPF_VST3_AUX_OUTPUT_GROUPS VST3: output port groups after the first are aux buses (off by
+                                            default); an output bus the host does not use reaches the plugin as nullptr
+                  (DPF_NATIVE_AUDIO_SETTINGS also: MIDI output ports for messages sent at once, MIDI clock let through
+                   RtMidi and handed to the plugin on arrival via dpf_midi_realtime_hook)
 ```
 
 Download a ready-made build from the Releases page (`HARDER-<version>-win64.zip`: HARDER.exe + HARDER.vst3, see
@@ -60,6 +65,10 @@ node tools/export_ref.js EXP && OUT/export_test EXP default kit0 ... poly && nod
 OUT/live_expect project.json pre n out.f32  # expected standalone output after PLAY (live recording test)
 g++ -std=gnu++17 -O1 -fsanitize=address,undefined -pthread tools/sample_test.cpp plugins/Harder/FileSys.cpp OUT/libhmath.a -o OUT/sample_test
 OUT/sample_test <empty dir>              # WAV formats, SAMPLE playback, projects with samples, library, sample lifetime
+g++ -std=gnu++17 -O1 -fsanitize=address,undefined -pthread tools/v2_test.cpp plugins/Harder/FileSys.cpp OUT/libhmath.a -o OUT/v2_test
+OUT/v2_test <empty dir>                  # 2.0: slices, stereo, chain / song (+ host positions), resampling, track outputs,
+                                         # MIDI clock in / out, kits, WAV cue points, transient detection, project keys
+OUT/fuzz_parsers 36000 <empty dir>       # mutated projects / sounds / grooves / kits / control.json / WAV (build with sanitizers)
 g++ -std=gnu++17 tools/control_test.cpp -o OUT/control_test && OUT/control_test   # default keys = the old fixed keys, ids, JSON, relative CC
 HARDER_CXXFLAGS=-DHARDER_TEST_MIDI_INJECT scripts/build.sh windows   # TEST build only: Documents/HARDER/midi-inject.txt (hex lines) is fed in as MIDI input
 ```

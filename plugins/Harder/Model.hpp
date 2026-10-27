@@ -31,11 +31,22 @@ struct Project {
   Pattern patterns[NPAT];
   int cur = 0; double bpm = 125, swing = 50; uint8_t mutes[NT] = { 0 }; int perfA = 8, perfB = 24;
   SampleRef smp[NSLOT];   // SAMPLE machine slots (immutable data, shared with the engine, undo and the library)
+  // sequencing beyond one pattern: seq 0 pattern, 1 chain, 2 song
+  int seq = ARR_OFF; std::vector<int8_t> chain; Arrangement song;
+  uint8_t outs[NT] = { 0 };   // plugin multi-out: 1 = the track plays on its own output pair (not in the main mix)
   Project() { reset(); }
   void reset() {   // in place (a Project is 2 MB: never create one on the stack)
     kit = 6; for (int i = 0; i < NT; i++) { tracks[i].m = M_SUB; defaultTrackParams(M_SUB, tracks[i].p); tracks[i].pre.clear(); roles[i] = i; mutes[i] = 0; }
     defaultMaster(master); for (auto& P : patterns) P.reset(); cur = 0; bpm = 125; swing = 50; perfA = 8; perfB = 24;
     for (auto& x : smp) x.reset();
+    seq = ARR_OFF; chain.clear(); song = Arrangement(); song.mode = ARR_SONG; for (auto& o : outs) o = 0;
+  }
+  // what the engine plays: the chain or the song, or nothing (pattern mode)
+  Arrangement arrangement() const {
+    Arrangement a;
+    if (seq == ARR_CHAIN && !chain.empty()) { a.mode = ARR_CHAIN; a.loop = true; a.n = std::min((int)chain.size(), NROW); for (int i = 0; i < a.n; i++) { a.rows[i].pat = chain[i]; a.rows[i].reps = 1; } }
+    else if (seq == ARR_SONG && song.n > 0) { a = song; a.mode = ARR_SONG; }
+    return a;
   }
   bool anySample() const { for (auto& x : smp) if (x) return true; return false; }
 };
@@ -210,7 +221,10 @@ inline void defaultProject(Project& p) {
 // Without "data" (undo snapshots) a sample is looked up by id in the session cache.
 inline JVal sampleToJson(const SampleData& s, bool withData) {
   JVal o = JVal::Obj(); o.set("id", JVal::Str(s.id)); o.set("name", JVal::Str(s.name)); o.set("rate", JVal::Num(s.rate));
-  o.set("len", JVal::Num(s.len)); o.set("fmt", JVal::Str(sampleFmtName(s.fmt))); if (withData) o.set("data", JVal::Str(s.base64()));
+  o.set("len", JVal::Num(s.len)); o.set("fmt", JVal::Str(sampleFmtName(s.fmt)));
+  if (s.ch == 2) o.set("ch", JVal::Num(2));
+  if (!s.slices.empty()) { JVal a = JVal::Arr(); for (int x : s.slices) a.push(JVal::Num(x)); o.set("slices", std::move(a)); }
+  if (withData) o.set("data", JVal::Str(s.base64()));
   return o;
 }
 inline SampleRef sampleFromJson(const JVal& j, SampleCache* cache, std::string* err = nullptr) {
@@ -218,7 +232,8 @@ inline SampleRef sampleFromJson(const JVal& j, SampleCache* cache, std::string* 
   const std::string id = j["id"].str();
   if (j["data"].isStr()) {
     std::vector<uint8_t> b; if (!b64decode(j["data"].str(), b)) { if (err) *err = "bad sample data"; return nullptr; }
-    SampleRef s = sampleFromBytes(j["name"].str(), j["rate"].num(0), sampleFmtFromName(j["fmt"].str()), b, err);
+    std::vector<int> sl; for (size_t k = 0; k < j["slices"].size() && k < 64; k++) sl.push_back(jsonInt(j["slices"][k].num(-1), -1, 0x7fffffff, -1));
+    SampleRef s = sampleFromBytes(j["name"].str(), j["rate"].num(0), sampleFmtFromName(j["fmt"].str()), b, err, j["ch"].num(1) == 2 ? 2 : 1, &sl);
     return cache ? cache->add(s) : s;
   }
   return cache && !id.empty() ? cache->find(id) : nullptr;
@@ -241,6 +256,21 @@ inline JVal projectToJson(const Project& S, bool withData = true) {
   o.set("cur", JVal::Num(S.cur)); o.set("bpm", JVal::Num(S.bpm)); o.set("swing", JVal::Num(S.swing));
   JVal mu = JVal::Arr(); for (int t = 0; t < NT; t++) mu.push(JVal::Num(S.mutes[t])); o.set("mutes", std::move(mu));
   JVal pf = JVal::Obj(); pf.set("a", JVal::Num(S.perfA)); pf.set("b", JVal::Num(S.perfB)); o.set("perf", std::move(pf));
+  // keys the web app does not know are written only when used (a project without them stays web-identical)
+  if (S.seq == ARR_CHAIN) o.set("seq", JVal::Str("chain")); else if (S.seq == ARR_SONG) o.set("seq", JVal::Str("song"));
+  if (!S.chain.empty()) { JVal c = JVal::Arr(); for (int8_t x : S.chain) c.push(JVal::Num(x)); o.set("chain", std::move(c)); }
+  if (S.song.n > 0) {
+    JVal so = JVal::Obj(), rows = JVal::Arr();
+    for (int r = 0; r < S.song.n; r++) {
+      const ArrRow& w = S.song.rows[r]; JVal x = JVal::Obj(); x.set("p", JVal::Num(w.pat)); x.set("n", JVal::Num(w.reps));
+      if (w.mute) { JVal m = JVal::Arr(); for (int t = 0; t < NT; t++) if ((w.mute >> t) & 1) m.push(JVal::Num(t + 1)); x.set("mute", std::move(m)); }
+      if (w.bpm > 0) x.set("bpm", JVal::Num(w.bpm));
+      rows.push(std::move(x));
+    }
+    so.set("rows", std::move(rows)); so.set("loop", JVal::Bool(S.song.loop)); if (S.song.start) so.set("start", JVal::Num(S.song.start)); o.set("song", std::move(so));
+  }
+  { bool any = false; for (uint8_t x : S.outs) if (x) any = true;
+    if (any) { JVal a = JVal::Arr(); for (int t = 0; t < NT; t++) a.push(JVal::Num(S.outs[t] ? 1 : 0)); o.set("outs", std::move(a)); } }
   if (S.anySample()) {
     JVal sa = JVal::Arr();
     for (int i = 0; i < NSLOT; i++) if (S.smp[i]) { JVal e = sampleToJson(*S.smp[i], withData); e.o.insert(e.o.begin(), { "slot", JVal::Num(i) }); sa.push(std::move(e)); }
@@ -267,6 +297,17 @@ inline bool projectFromJson(const JVal& o, Project& p, SampleCache* cache = null
   q->bpm = q->patterns[q->cur].bpm; q->swing = q->patterns[q->cur].swing;
   const JVal& sa = o["samples"];
   for (size_t k = 0; k < sa.size(); k++) { const int slot = clampi(sa[k]["slot"].num(-1), -1, NSLOT - 1, -1); if (slot >= 0) q->smp[slot] = sampleFromJson(sa[k], cache); }
+  { const std::string sq = o["seq"].str(); q->seq = sq == "chain" ? ARR_CHAIN : sq == "song" ? ARR_SONG : ARR_OFF; }
+  for (size_t k = 0; k < o["chain"].size() && k < (size_t)NROW; k++) q->chain.push_back((int8_t)clampi(o["chain"][k].num(0), 0, NPAT - 1, 0));
+  { const JVal& so = o["song"]; const JVal& rows = so["rows"];
+    for (size_t k = 0; k < rows.size() && k < (size_t)NROW; k++) {
+      ArrRow& w = q->song.rows[q->song.n++]; const JVal& x = rows[k];
+      w.pat = (int8_t)clampi(x["p"].num(0), 0, NPAT - 1, 0); w.reps = (uint8_t)clampi(x["n"].num(1), 1, 99, 1);
+      w.mute = 0; for (size_t m = 0; m < x["mute"].size(); m++) { const int t = clampi(x["mute"][m].num(0), 0, NT, 0); if (t >= 1) w.mute |= (uint8_t)(1 << (t - 1)); }
+      const double b = x["bpm"].num(0); w.bpm = std::isfinite(b) && b >= 40 && b <= 300 ? (float)b : 0;
+    }
+    q->song.loop = !so.has("loop") || so["loop"].truthy(); q->song.start = clampi(so["start"].num(0), 0, std::max(0, q->song.n - 1), 0); q->song.mode = ARR_SONG; }
+  for (int t = 0; t < NT; t++) q->outs[t] = o["outs"][t].truthy() ? 1 : 0;
   p = *q; return true;
 }
 inline std::string projectToString(const Project& S, bool withData = true) { std::string s; writeJson(s, projectToJson(S, withData)); return s; }

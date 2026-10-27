@@ -1,4 +1,4 @@
-HARDER 1.3.1 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
+HARDER 2.0.0 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
 =================================================================================================
 
 包里有两样东西 / Two things in this package
@@ -42,6 +42,16 @@ MIDI 输入 MIDI in (LAB → AUDIO)
     要在别的程序里用这个键盘，就在这里取消勾选。接上新设备后点 RESCAN。
     All inputs are opened on the first start, then your ticks are remembered. On Windows one program at a time
     can use a MIDI input: untick it here to use it elsewhere. RESCAN after plugging a device in.
+
+MIDI 时钟 MIDI clock (LAB → AUDIO，独立程序 standalone)
+  - Follow MIDI clock in：跟随外部 MIDI 时钟（另一个程序、硬件或 Lower）：Start 从头开始，Stop 停，
+    Continue 从 Song Position Pointer 的位置继续；速度跟随时钟（每拍 24 个 tick，抖动被平滑）。
+    跟随时顶栏显示 "MIDI CLOCK xxx BPM"，PLAY 键不起作用。
+    Follows Start / Stop / Continue + song position and the tempo of an external clock.
+  - Send MIDI clock：向勾选的 MIDI OUTPUT 发送时钟（PLAY 时先发 Start，STOP 发 Stop，停止时也持续发 tick，
+    让对方显示速度）。CLOCK OUT OFFSET：对方比 HARDER 快就调正值（晚发），慢就调负值。
+    Sends clock to the ticked MIDI outputs; OFFSET moves it later (+) or earlier (−) in ms.
+  - 插件里走带跟随 Live，不用 MIDI 时钟。In Live the plugin follows Live's transport.
 
 键盘和 MIDI 控制器 Keyboard and MIDI controller (LAB → CONTROL，独立程序 standalone only)
   - 左边按组列出面板上的每个按钮（TRANSPORT / STEPS / PADS / TRACKS / PATTERNS / PAGES / EDIT）和旋钮（KNOBS），
@@ -109,8 +119,19 @@ MIDI 输入 MIDI in（在 MIDI 片段里写音符即可）
   - Parameter lock（按住 step 拧旋钮）存在 pattern 里，不占自动化通道。
   - 你在插件里刚改过的参数（载入音色/套件、拧旋钮），1 秒内不接受 Live 回传的旧值；1 秒后自动化照常生效。
 
+多路输出 Multi-out（LAB → PROJECT → OUTPUTS）
+  - 插件有 9 组立体声输出：Main，以及 Track 1–8。在 LAB → PROJECT 点亮 T1–T8 中的某条轨，这条轨就离开主混音，
+    从它自己的输出出来 —— 前提是 Live 用了这组输出：新建一条音频轨，Audio From 选 HARDER，下面选 "Track n"，
+    Monitor 选 In。Live 没用到这组输出时，这条轨照常留在主混音里（不会消失）。
+  - 单独输出的轨仍然把 Delay / Reverb 发送送到主输出上的效果器；它不经过主总线的 Glue、Drive 和限幅器
+    （声音和主混音里一样，只是不被主总线压缩），并补上限幅器的 1.5 ms 前瞻延迟，与主输出对齐。
+  - 点亮的轨在面板的轨道按钮上标 "O"。设置存在工程里（可撤销）。独立程序只有主输出，这个设置在那里不起作用。
+    Nine stereo outputs: Main + Track 1–8. A lit track leaves the main mix and plays on "Track n" once Live uses
+    that output (audio track, Audio From = HARDER / Track n). Sends still go to the FX on Main; the track skips the
+    master glue, drive and limiter, delayed by the limiter's look-ahead so it lines up with Main.
+
 保存 Saving
-  - 整个工程（音色、8 个 pattern、锁、主控、界面设置）随 Live Set 一起保存。
+  - 整个工程（音色、8 个 pattern、锁、主控、Song / Chain、输出设置、界面设置）随 Live Set 一起保存。
   - 电脑键盘快捷键在插件里不启用（键盘归 Live 用）。
 
 =================================================================================================
@@ -121,7 +142,7 @@ MIDI 输入 MIDI in（在 MIDI 片段里写音符即可）
     MIDI（C1 = 第 1 轨）和工程 .json。长度 1/2/4/8 遍。与网页版导出的文件相同。
     在 Live 里且 Live 正在播放时，按 Live 的速度渲染。
     Loop: seamless 24-bit WAV, optional stems, MIDI and the project, 1/2/4/8 loops; same files as the web export.
-  - EXPORT KIT：8 个音色各渲染成干声单发 WAV + 套件 .json。Kit: eight dry one-shots.
+  - EXPORT KIT：8 个音色各渲染成干声单发 WAV + 套件 .json（2.0 起 SAMPLE 轨也渲染出声音）。Kit: eight dry one-shots.
   - 导出在后台进行，不影响播放；进度和结果显示在按钮下方。
 
 音量区 Level strip（主界面右下角）
@@ -147,8 +168,25 @@ SAMPLE 机器 SAMPLE machine（第 10 种机器）
     OLED 显示整段波形、播放范围和循环点。
   - 采样随工程保存（内嵌在 .json 和 Live Set 里，换电脑也能打开），每个工程最多 64 个槽。
     LAB → SOUND → USER LIBRARY → CLEAN UP SLOTS 清掉不再使用的采样。
-  - 混成单声道播放（和 Elektron 采样轨一样），保持文件自己的采样率（实时变速插值），最长 60 秒。
-    支持 WAV：8/16/24/32 位整数、32/64 位浮点、任意声道数、任意采样率。
+  - 单声道和立体声 WAV 保持原声道（2.0 起；立体声采样两侧都经过滤波、失真、包络，PAN 变成平衡控制）；
+    其他声道数混成单声道。保持文件自己的采样率（实时变速插值），最长 60 秒。
+    支持 WAV：8/16/24/32 位整数、32/64 位浮点、任意采样率；WAV 里的 cue 标记作为切片点读入。
+    Mono and stereo files keep their channels; WAV cue points become slice points.
+
+切片 Slices（LAB → SAMPLE，或 SAMPLE 机器的 STEP 页）
+  - SLICES / SLCS：OFF、8、16、32、64 等分，或 AUTO = 按切片点（DETECT 检测出的鼓点，或 WAV 自带的 cue 标记）。
+  - 第 n 步播放第 n 片（SLCE = STEP）。在某一步 lock SLCE 就让这一步播另一片；对整轨设 SLCE = 固定播某一片。
+    STRT / END / MODE / LOOP 在切片内部起作用，所以 MODE = REV 就是倒放这一片。
+  - DETECT：按 SENSITIVITY 检测鼓点（越高找到的越多）；CLEAR POINTS 清掉切片点。保存音色、套件和重采样时，
+    切片点作为 cue 标记写进 WAV，其他软件也能读到。
+    Step n plays slice n; lock SLCE to choose another. STRT/END/MODE/LOOP apply inside the slice.
+
+重采样 Resample（LAB → SAMPLE → RESAMPLE）
+  - SOURCE：MAIN = 主输出（含全部效果和限幅器），T1–T8 = 单条轨（音量和声像之后、效果之前）。
+  - LENGTH：PATTERN = 当前 pattern 一遍，或 1 / 2 / 4 / 8 小节。START：NEXT PATTERN = 从下一个 pattern 开头录，
+    NOW = 立即开始。录音中再按一次 = 停止并保留已录的部分（等待时 = 取消）。
+  - 录好的采样存到 Library\Sounds\Resampled\，并装到当前所选轨道（空槽）。两侧完全相同时存成单声道。
+    Records the main output or one track into a new sample, saved to the library and loaded onto the track.
 
 用户库 User library（LAB → SOUND → USER LIBRARY；LAB → GROOVE → USER）
   - 位置：文档\HARDER\Library\  —— 独立程序和插件共用。Sounds\ 和 Grooves\ 下的每个文件夹就是一个分类，
@@ -158,6 +196,10 @@ SAMPLE 机器 SAMPLE machine（第 10 种机器）
     RENAME / DELETE 作用于选中的音色，没有选中音色时作用于当前分类；双击分类 = 改名；+ NEW = 新建分类。
     删除的东西移到 Library\Trash\，不会直接删掉（需要按两次确认）。
   - Groove：SAVE PATTERN 把当前 pattern 存进库，点击 = 载入到当前 pattern（UNDO 可以撤回）。
+  - 套件 Kits（LAB → KITS → USER）：SAVE KIT 把 8 条轨的音色、轨道角色（可选连同主 FX）存成一个套件，
+    SAMPLE 轨的采样存在套件旁边的 "<套件名>.samples" 文件夹里。点击 = 一次载入 8 条轨（采样放进空槽，主音量不变，
+    可撤销）。分类、改名、删除和音色库一样。
+    User kits: all eight sounds (with their samples) and optionally the master FX, in Library\Kits\.
   - 名称可以用中文（独立程序里直接输入；中文显示用 Windows 自带的微软雅黑）。在 Live 里插件只收到宿主转发的
     英文字母和数字：中文名请在独立程序里起，或先用默认名再在资源管理器里改。
     Names may be Chinese in the standalone; in a host the plugin only receives ASCII keys.
@@ -169,16 +211,39 @@ SAMPLE 机器 SAMPLE machine（第 10 种机器）
   - 文件格式和参数表见源码里的 docs/LIBRARY.md（也在本包里）。写文件时请先用临时文件名，写完再改名。
     Other programs can write WAVs or HARDER sound files into the library; see docs/LIBRARY.md.
 
+Chain / Song（PATTERN 键上方的 PTN / CHN / SNG）
+  - PTN：和以前一样，只播当前 pattern（按 pattern 键在结尾切换）。
+  - CHN（Chain）：依次按 pattern 键排一串（最多 64 个），PLAY 按顺序循环播放；"×" 清空。现场临时排段落用。
+  - SNG（Song）：在 LAB → SONG 编辑。每一行：pattern、重复次数、本行静音的轨（只在这一行生效）、
+    可选的本行速度（PTN = 用 pattern 自己的速度；点亮后用滚轮调）。+ ROW 加入当前 pattern，DUPLICATE / MOVE /
+    CLEAR 编辑，CHAIN TO SONG 把 chain 转成 song。AT THE END：LOOP 从头循环，STOP 播完停止。
+    点行号 = 从这一行开始播。播放中按 pattern 键 = 插播那个 pattern 一遍，然后 song 接着走。
+  - 插件里：Live 播放时 song 跟随 Live 的位置（第 1 小节 = 第 1 行；从第 N 小节开始播放会跳到对应的行和重复）；
+    设为 STOP 时，song 结束之后的位置是静音的。
+    Chain: patterns in order, looped. Song: rows of pattern × repeats with row mutes and an optional tempo;
+    in Live the song follows the arrangement position.
+
 工程文件 Project files (LAB → PROJECT)
   - SAVE/LOAD PROJECT：.json，与网页版 harder-project.json 完全互通。
 
 界面 UI
-  - LAB 拉手：展开/折叠下方的详细设置（Groove 库、音色库、套件、表演、工程，独立程序还有 AUDIO）。
+  - LAB 拉手：展开/折叠下方的详细设置（Groove 库、音色库、采样、套件、Song、表演、工程，独立程序还有 AUDIO 和 CONTROL）。
   - 右下 DARK/LIGHT：深浅色。LAB → PROJECT → UI SIZE：75%–150% 缩放（高分屏自动乘上 Windows 缩放比例）。
   - 右上角 DSP 读数是音频线程的实际负载（处理时间 / buffer 时长，0.5 秒平均）。
   - 操作与网页版相同：点 step 开关；按住 step 半秒锁定后拧旋钮 = parameter lock；
     FUNC/Shift+点 step = trigless lock；双击旋钮复位；Shift 拖动 = 微调；滚轮也可调。
 
+2.0.0 新增 New in 2.0.0
+  - 用户套件：8 条轨的音色连同采样存成套件，放进库里分类管理。User kits in the library.
+  - Chain 和 Song 模式：pattern 串起来连续播放；song 每行有重复次数、静音和速度，插件里跟随 Live 位置。
+    Chain and song mode; the song follows Live's position in the plugin.
+  - SAMPLE 机器：切片（8–64 等分或按检测/cue 切片点）、立体声采样、重采样（主输出或单轨录成新采样）。
+    Slices, stereo samples, resampling.
+  - 独立程序：MIDI 时钟输入（跟随 Start/Stop/Continue/位置和速度）与输出。MIDI clock in and out (standalone).
+  - 插件：多路输出（Main + Track 1–8），每轨可以单独送到 Live 的音频轨。Multi-out in the plugin.
+  - 修正：EXPORT KIT 里 SAMPLE 轨是静音的（1.2.0 起）。Fixed: SAMPLE tracks were silent in EXPORT KIT.
+  - 没有用到新功能的工程与 1.x 和网页版完全相同；声音引擎对已有工程逐样本不变。
+    Projects that use none of this are unchanged (web-compatible); existing projects render bit-identically.
 1.3.1 修正 Fixes in 1.3.1
   - 重命名音色分类文件夹时不再把其中的音色当作“新文件”自动载入到当前轨道。
     Renaming a category no longer auto-loads its sounds onto the selected track.
@@ -208,11 +273,13 @@ SAMPLE 机器 SAMPLE machine（第 10 种机器）
   - DIGITAL 类音色的波形预览画错（不影响声音）。
 
 已知限制 Known limits
-  - 只有立体声主输出（多轨分轨输出留到下一版；需要分轨请用 EXPORT LOOP 的 stems）。
-  - 独立程序不接收外部 MIDI 时钟，用自己的时钟。The standalone runs its own clock (no MIDI clock in).
+  - 独立程序只有主输出（多路输出只在插件里）；独立程序在 JACK 下也列出 Track 1–8 端口，但它们是静音的。
+  - 插件不发送 MIDI 时钟（Live 自己可以发）；独立程序跟随外部时钟时不能同时把它转发出去。
   - 只提供 64 位 Windows。
-  - 用到 SAMPLE 机器的工程不能在网页版里打开（网页版没有这个机器）。
-  - SAMPLE 机器是单声道；不读 AIFF、FLAC、MP3 和压缩 WAV；单个采样最长 60 秒。
+  - 用到 SAMPLE 机器的工程不能在网页版里打开（网页版没有这个机器）。chain / song 和多路输出的设置网页版会忽略：
+    工程照样能打开，只是只播当前 pattern。Web app: SAMPLE projects do not open; chain / song / outputs are ignored.
+  - 不读 AIFF、FLAC、MP3 和压缩 WAV；单个采样最长 60 秒；3 声道以上混成单声道。
+  - 在一个响亮鼓点的尾音上、只升高几 dB 的鼓点，默认灵敏度（50）可能检测不到：调高 SENSITIVITY。
 
 许可证 License: HARDER 是自由软件，按 GNU GPL 第 3 版（或更新版本）发布，见 LICENSE.txt。
   HARDER is free software under the GNU General Public License v3 or later (LICENSE.txt).

@@ -145,8 +145,9 @@ inline bool exportLoopZip(const Project& S, int loops, bool stems, std::vector<u
   zip = zipStore(files); return true;
 }
 // web renderOneShot(track, null, sr, 6, 127) + exportKit() trimming
-inline std::vector<float> kitOneShot(const TrackM& tk, double bpm, double sr) {
-  std::unique_ptr<Engine> e(new Engine()); e->init(sr); e->loadTrack(0, tk.m, tk.p); e->msgBpm(bpm);
+inline std::vector<float> kitOneShot(const TrackM& tk, double bpm, double sr, const Project* S = nullptr) {
+  std::unique_ptr<Engine> e(new Engine()); e->init(sr); if (S) for (int i = 0; i < NSLOT; i++) e->setSample(i, S->smp[i].get());   // SAMPLE tracks
+  e->loadTrack(0, tk.m, tk.p); e->msgBpm(bpm);
   e->trigTrack(0, nullptr, 127);
   const long N = (long)jsround(sr * 6); std::vector<float> L((size_t)N), R((size_t)N), st((size_t)N);
   e->stems[0] = st.data(); e->process(L.data(), R.data(), (int)N); e->stems[0] = nullptr;
@@ -160,7 +161,7 @@ inline bool exportKitZip(const Project& S, std::vector<uint8_t>& zip, const Expo
   const double sr = 48000; std::vector<ZipEntry> files;
   for (int t = 0; t < NT; t++) {
     if (status) status("RENDERING ONE-SHOT " + std::to_string(t + 1) + " OF 8");
-    const std::vector<float> o = kitOneShot(S.tracks[t], S.bpm, sr);
+    const std::vector<float> o = kitOneShot(S.tracks[t], S.bpm, sr, &S);
     files.push_back({ std::string(t + 1 < 10 ? "0" : "") + std::to_string(t + 1) + "_" + safeName(soundName(S.tracks[t])) + ".wav", wav24({ o.data() }, o.size(), (int)sr) });
     if (cancel && cancel->load()) return false;
   }

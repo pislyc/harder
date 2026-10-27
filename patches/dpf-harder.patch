@@ -1,5 +1,5 @@
 diff --git a/distrho/DistrhoStandaloneUtils.hpp b/distrho/DistrhoStandaloneUtils.hpp
-index 8fffcdaa..90122e23 100644
+index 8fffcdaa..d83dfb91 100644
 --- a/distrho/DistrhoStandaloneUtils.hpp
 +++ b/distrho/DistrhoStandaloneUtils.hpp
 @@ -19,6 +19,11 @@
@@ -14,7 +14,7 @@ index 8fffcdaa..90122e23 100644
  START_NAMESPACE_DISTRHO
  
  /* ------------------------------------------------------------------------------------------------------------
-@@ -90,6 +95,17 @@ bool requestBufferSizeChange(uint newBufferSize);
+@@ -90,6 +95,21 @@ bool requestBufferSizeChange(uint newBufferSize);
  */
  bool requestMIDI();
  
@@ -27,6 +27,10 @@ index 8fffcdaa..90122e23 100644
 +bool requestAudioConfig(const char* device, uint sampleRate, uint bufferSize);
 +bool getMidiInputs(std::vector<std::string>& names, std::vector<bool>& open);
 +bool setMidiInputs(const std::vector<std::string>& names);
++/* MIDI outputs for messages sent at once from any thread (MIDI clock): independent of the plugin's MIDI output */
++bool getMidiOutputs(std::vector<std::string>& names, std::vector<bool>& open);
++bool setMidiOutputs(const std::vector<std::string>& names);
++bool sendMidiOutputNow(const uint8_t* data, uint size);
 +#endif
 +
  /** @} */
@@ -81,7 +85,7 @@ index 461a7ec5..173fc2f4 100644
  #else
  # define DPF_VST3_HAS_INTERNAL_PARAMETERS 0
 diff --git a/distrho/src/DistrhoPluginVST3.cpp b/distrho/src/DistrhoPluginVST3.cpp
-index 7295c892..27c1974d 100644
+index 7295c892..a6de4cf5 100644
 --- a/distrho/src/DistrhoPluginVST3.cpp
 +++ b/distrho/src/DistrhoPluginVST3.cpp
 @@ -58,6 +58,10 @@
@@ -138,7 +142,31 @@ index 7295c892..27c1974d 100644
          if (fComponentHandler != nullptr && componentValuesChanged)
              v3_cpp_obj(fComponentHandler)->restart_component(fComponentHandler, V3_RESTART_PARAM_VALUES_CHANGED);
  
-@@ -1645,8 +1677,15 @@ public:
+@@ -1499,7 +1531,11 @@ public:
+                     {
+                         DISTRHO_SAFE_ASSERT_INT_BREAK(i < DISTRHO_PLUGIN_NUM_OUTPUTS, i);
+                         if (!fEnabledOutputs[i] && i < DISTRHO_PLUGIN_NUM_OUTPUTS) {
++                           #ifdef DPF_VST3_AUX_OUTPUT_GROUPS
++                            outputs[i] = i >= 2 ? nullptr : fDummyAudioBuffer; ++i;   // HARDER patch: the plugin sees an unused aux output
++                           #else
+                             outputs[i++] = fDummyAudioBuffer;
++                           #endif
+                             continue;
+                         }
+ 
+@@ -1509,7 +1545,11 @@ public:
+             }
+            #endif
+             for (; i < std::max(1, DISTRHO_PLUGIN_NUM_OUTPUTS); ++i)
++               #ifdef DPF_VST3_AUX_OUTPUT_GROUPS
++                outputs[i] = i >= 2 ? nullptr : fDummyAudioBuffer;
++               #else
+                 outputs[i] = fDummyAudioBuffer;
++               #endif
+         }
+ 
+        #if DISTRHO_PLUGIN_WANT_MIDI_OUTPUT
+@@ -1645,8 +1685,15 @@ public:
                  if (v3_cpp_obj(queue)->get_point(queue, pcount - 1, &offset, &normalized) != V3_OK)
                      break;
  
@@ -154,7 +182,7 @@ index 7295c892..27c1974d 100644
  
                  const uint32_t index = rindex - kVst3InternalParameterCount;
                  _setNormalizedPluginParameterValue(index, normalized);
-@@ -1839,6 +1878,17 @@ public:
+@@ -1839,6 +1886,17 @@ public:
              value = std::round(value);
          }
  
@@ -172,7 +200,34 @@ index 7295c892..27c1974d 100644
          for (uint32_t i=0; i < enumValues.count; ++i)
          {
              if (d_isEqual(enumValues.values[i].value, value))
-@@ -3426,8 +3476,12 @@ struct dpf_midi_mapping : v3_midi_mapping_cpp {
+@@ -2561,7 +2619,11 @@ private:
+                 port.busId = std::find(vpgStart, vpgEnd, port.groupId) - vpgStart;
+ 
+                 if (busInfo.audio == 0 && (port.hints & kAudioPortIsSidechain) == 0x0)
++                   #ifdef DPF_VST3_AUX_OUTPUT_GROUPS
++                    enabledPorts[i] = isInput || port.busId == 0;
++                   #else
+                     enabledPorts[i] = true;
++                   #endif
+             }
+             else
+             {
+@@ -2641,6 +2703,14 @@ private:
+                     {
+                         busType = V3_MAIN;
+                         flags = busInfo.audio == 0 ? V3_DEFAULT_ACTIVE : 0;
++                       #ifdef DPF_VST3_AUX_OUTPUT_GROUPS
++                        // HARDER patch: output groups after the first are auxiliary buses, off until the host uses them
++                        if (!isInput && busId > 0)
++                        {
++                            busType = V3_AUX;
++                            flags = 0;
++                        }
++                       #endif
+                     }
+                     break;
+                 }
+@@ -3426,8 +3496,12 @@ struct dpf_midi_mapping : v3_midi_mapping_cpp {
          DISTRHO_SAFE_ASSERT_INT_RETURN(channel >= 0 && channel < 16, channel, V3_FALSE);
          DISTRHO_SAFE_ASSERT_INT_RETURN(cc >= 0 && cc < 130, cc, V3_FALSE);
  
@@ -186,10 +241,10 @@ index 7295c892..27c1974d 100644
  
      DISTRHO_PREVENT_HEAP_ALLOCATION
 diff --git a/distrho/src/DistrhoUtils.cpp b/distrho/src/DistrhoUtils.cpp
-index f029cacc..66f0a4cf 100644
+index f029cacc..edc7bfc1 100644
 --- a/distrho/src/DistrhoUtils.cpp
 +++ b/distrho/src/DistrhoUtils.cpp
-@@ -404,6 +404,15 @@ uint getBufferSize() { return 0; }
+@@ -404,6 +404,18 @@ uint getBufferSize() { return 0; }
  bool requestAudioInput() { return false; }
  bool requestBufferSizeChange(uint) { return false; }
  bool requestMIDI() { return false; }
@@ -201,12 +256,15 @@ index f029cacc..66f0a4cf 100644
 +bool requestAudioConfig(const char*, uint, uint) { return false; }
 +bool getMidiInputs(std::vector<std::string>&, std::vector<bool>&) { return false; }
 +bool setMidiInputs(const std::vector<std::string>&) { return false; }
++bool getMidiOutputs(std::vector<std::string>&, std::vector<bool>&) { return false; }
++bool setMidiOutputs(const std::vector<std::string>&) { return false; }
++bool sendMidiOutputNow(const uint8_t*, uint) { return false; }
 +# endif
  #endif
  
  // --------------------------------------------------------------------------------------------------------------------
 diff --git a/distrho/src/jackbridge/JackBridge.cpp b/distrho/src/jackbridge/JackBridge.cpp
-index c4c44b54..26fbe03a 100644
+index c4c44b54..432f4c70 100644
 --- a/distrho/src/jackbridge/JackBridge.cpp
 +++ b/distrho/src/jackbridge/JackBridge.cpp
 @@ -1305,6 +1305,14 @@ bool jackbridge_set_sample_rate_callback(jack_client_t* client, JackSampleRateCa
@@ -224,7 +282,7 @@ index c4c44b54..26fbe03a 100644
  #endif
      return false;
  }
-@@ -2483,6 +2491,76 @@ bool requestMIDI()
+@@ -2483,6 +2491,103 @@ bool requestMIDI()
      return false;
  }
  
@@ -296,13 +354,40 @@ index c4c44b54..26fbe03a 100644
 +#endif
 +    return false;
 +}
++
++bool getMidiOutputs(std::vector<std::string>& names, std::vector<bool>& open)
++{
++#if !(defined(JACKBRIDGE_DUMMY) || defined(JACKBRIDGE_DIRECT))
++    if (usingNativeBridge && nativeBridge != nullptr)
++        return nativeBridge->getMidiOutputs(names, open);
++#endif
++    return false;
++}
++
++bool setMidiOutputs(const std::vector<std::string>& names)
++{
++#if !(defined(JACKBRIDGE_DUMMY) || defined(JACKBRIDGE_DIRECT))
++    if (usingNativeBridge && nativeBridge != nullptr)
++        return nativeBridge->setMidiOutputs(names);
++#endif
++    return false;
++}
++
++bool sendMidiOutputNow(const uint8_t* data, uint size)
++{
++#if !(defined(JACKBRIDGE_DUMMY) || defined(JACKBRIDGE_DIRECT))
++    if (usingNativeBridge && nativeBridge != nullptr)
++        return nativeBridge->sendMidiOutputNow(data, size);
++#endif
++    return false;
++}
 +#endif
 +
  END_NAMESPACE_DISTRHO
  
  #endif // JACKBRIDGE_SKIP_NATIVE_UTILS
 diff --git a/distrho/src/jackbridge/NativeBridge.hpp b/distrho/src/jackbridge/NativeBridge.hpp
-index c1fc610f..9f4d20fe 100644
+index c1fc610f..0afb4922 100644
 --- a/distrho/src/jackbridge/NativeBridge.hpp
 +++ b/distrho/src/jackbridge/NativeBridge.hpp
 @@ -22,6 +22,11 @@
@@ -317,7 +402,7 @@ index c1fc610f..9f4d20fe 100644
  #if DISTRHO_PLUGIN_NUM_INPUTS > 2
  # define DISTRHO_PLUGIN_NUM_INPUTS_2 2
  #else
-@@ -56,6 +61,17 @@ struct NativeBridge {
+@@ -56,6 +61,20 @@ struct NativeBridge {
      JackBufferSizeCallback bufferSizeCallback;
      void* jackProcessArg;
      void* jackBufferSizeArg;
@@ -331,15 +416,18 @@ index c1fc610f..9f4d20fe 100644
 +    virtual bool requestAudioConfig(const char*, uint, uint) { return false; }
 +    virtual bool getMidiInputs(std::vector<std::string>&, std::vector<bool>&) { return false; }
 +    virtual bool setMidiInputs(const std::vector<std::string>&) { return false; }
++    virtual bool getMidiOutputs(std::vector<std::string>&, std::vector<bool>&) { return false; }
++    virtual bool setMidiOutputs(const std::vector<std::string>&) { return false; }
++    virtual bool sendMidiOutputNow(const uint8_t*, uint) { return false; }
 +   #endif
  
      // Runtime buffers
      enum PortMask {
 diff --git a/distrho/src/jackbridge/RtAudioBridge.hpp b/distrho/src/jackbridge/RtAudioBridge.hpp
-index 926b3791..f69c49a7 100644
+index 926b3791..9fcd433d 100644
 --- a/distrho/src/jackbridge/RtAudioBridge.hpp
 +++ b/distrho/src/jackbridge/RtAudioBridge.hpp
-@@ -47,6 +47,7 @@
+@@ -47,12 +47,19 @@
  
  #ifdef RTAUDIO_API_TYPE
  # include "rtaudio/RtAudio.h"
@@ -347,7 +435,19 @@ index 926b3791..f69c49a7 100644
  # include "rtmidi/RtMidi.h"
  # include "../../extra/ScopedPointer.hpp"
  # include "../../extra/String.hpp"
-@@ -70,6 +71,11 @@ struct RtAudioBridge : NativeBridge {
+ # include "../../extra/ScopedDenormalDisable.hpp"
+ 
+ using DISTRHO_NAMESPACE::ScopedDenormalDisable;
++#ifdef DPF_NATIVE_AUDIO_SETTINGS
++# include <mutex>
++// HARDER patch: MIDI clock / start / stop / continue / song position bypass the per-block MIDI buffer, so the plugin
++// can time them from their arrival (implemented by the plugin)
++void dpf_midi_realtime_hook(const unsigned char* data, unsigned int size);
++#endif
+ using DISTRHO_NAMESPACE::ScopedPointer;
+ using DISTRHO_NAMESPACE::String;
+ 
+@@ -70,6 +77,14 @@ struct RtAudioBridge : NativeBridge {
      // caching
      String name;
      uint nextBufferSize = 512;
@@ -355,11 +455,14 @@ index 926b3791..f69c49a7 100644
 +    std::string deviceName;          // empty: system default output
 +    uint nextSampleRate = 48000;
 +    std::vector<std::string> midiInNames;   // ports currently open, same order as midiIns
++   #ifdef RTMIDI_API_TYPE
++    std::vector<RtMidiOut> hdMidiOuts; std::vector<std::string> hdMidiOutNames; std::mutex hdMidiOutLock;
++   #endif
 +   #endif
  
      RtAudioBridge()
      {
-@@ -86,11 +92,25 @@ struct RtAudioBridge : NativeBridge {
+@@ -86,11 +101,25 @@ struct RtAudioBridge : NativeBridge {
      bool open(const char* const clientName) override
      {
          name = clientName;
@@ -385,7 +488,7 @@ index 926b3791..f69c49a7 100644
          DISTRHO_SAFE_ASSERT_RETURN(handle != nullptr, false);
  
          if (handle->isStreamRunning())
-@@ -109,6 +129,10 @@ struct RtAudioBridge : NativeBridge {
+@@ -109,6 +138,10 @@ struct RtAudioBridge : NativeBridge {
  
      bool activate() override
      {
@@ -396,7 +499,7 @@ index 926b3791..f69c49a7 100644
          DISTRHO_SAFE_ASSERT_RETURN(handle != nullptr, false);
  
          try {
-@@ -120,6 +144,10 @@ struct RtAudioBridge : NativeBridge {
+@@ -120,6 +153,10 @@ struct RtAudioBridge : NativeBridge {
  
      bool deactivate() override
      {
@@ -407,7 +510,7 @@ index 926b3791..f69c49a7 100644
          DISTRHO_SAFE_ASSERT_RETURN(handle != nullptr, false);
  
          try {
-@@ -316,6 +344,15 @@ struct RtAudioBridge : NativeBridge {
+@@ -316,6 +353,15 @@ struct RtAudioBridge : NativeBridge {
         #if DISTRHO_PLUGIN_NUM_OUTPUTS > 0
          RtAudio::StreamParameters outParams;
          outParams.deviceId = tryingAgain != nullptr ? 1 : rtAudio->getDefaultOutputDevice();
@@ -423,7 +526,7 @@ index 926b3791..f69c49a7 100644
          outParams.nChannels = DISTRHO_PLUGIN_NUM_OUTPUTS_2;
          RtAudio::StreamParameters* const outParamsPtr = &outParams;
         #else
-@@ -335,10 +372,30 @@ struct RtAudioBridge : NativeBridge {
+@@ -335,10 +381,30 @@ struct RtAudioBridge : NativeBridge {
          opts.streamName = name.buffer();
  
          try {
@@ -456,7 +559,7 @@ index 926b3791..f69c49a7 100644
              if (outParams.deviceId == 0 && rtAudio->getDeviceCount() > 1)
                  return _open(withInput, rtAudio.release());
             #endif
-@@ -347,12 +404,180 @@ struct RtAudioBridge : NativeBridge {
+@@ -347,12 +413,252 @@ struct RtAudioBridge : NativeBridge {
          } DISTRHO_SAFE_EXCEPTION_RETURN("rtAudio->openStream()", false);
  
          handle = rtAudio;
@@ -616,6 +719,7 @@ index 926b3791..f69c49a7 100644
 +                try {
 +                    RtMidiIn midiIn(RtMidi::RTMIDI_API_TYPE, name.buffer());
 +                    midiIn.setCallback(RtMidiCallback, this);
++                    midiIn.ignoreTypes(true, false, true);   // HARDER patch: let MIDI clock through
 +                    midiIn.openPort(i);
 +                    midiIns.push_back(std::move(midiIn));
 +                    midiInNames.push_back(pn);
@@ -632,11 +736,96 @@ index 926b3791..f69c49a7 100644
 +        return true;
 +    }
 +   #endif
++   #ifdef RTMIDI_API_TYPE
++    bool getMidiOutputs(std::vector<std::string>& names, std::vector<bool>& open) override
++    {
++        names.clear();
++        open.clear();
++        try {
++            RtMidiOut probe(RtMidi::RTMIDI_API_TYPE, name.buffer());
++            const uint n = probe.getPortCount();
++            const std::lock_guard<std::mutex> g(hdMidiOutLock);
++            for (uint i = 0; i < n; ++i)
++            {
++                const std::string pn = probe.getPortName(i);
++                names.push_back(pn);
++                bool isOpen = false;
++                for (const std::string& o : hdMidiOutNames)
++                    if (o == pn) isOpen = true;
++                open.push_back(isOpen);
++            }
++        } catch (const RtMidiError& err) {
++            d_safe_exception(err.getMessage().c_str(), __FILE__, __LINE__);
++            return false;
++        } DISTRHO_SAFE_EXCEPTION_RETURN("getMidiOutputs", false);
++        return true;
++    }
++
++    bool setMidiOutputs(const std::vector<std::string>& wanted) override
++    {
++        const std::lock_guard<std::mutex> g(hdMidiOutLock);
++        try {
++            hdMidiOuts.clear();
++        } DISTRHO_SAFE_EXCEPTION("hdMidiOuts.clear()");
++        hdMidiOutNames.clear();
++        try {
++            RtMidiOut probe(RtMidi::RTMIDI_API_TYPE, name.buffer());
++            const uint n = probe.getPortCount();
++            for (uint i = 0; i < n; ++i)
++            {
++                const std::string pn = probe.getPortName(i);
++                bool want = false;
++                for (const std::string& w : wanted)
++                    if (w == pn) want = true;
++                if (!want)
++                    continue;
++                try {
++                    RtMidiOut out(RtMidi::RTMIDI_API_TYPE, name.buffer());
++                    out.openPort(i);
++                    hdMidiOuts.push_back(std::move(out));
++                    hdMidiOutNames.push_back(pn);
++                } catch (const RtMidiError& err) {
++                    d_safe_exception(err.getMessage().c_str(), __FILE__, __LINE__);
++                } DISTRHO_SAFE_EXCEPTION("midiOut.openPort()");
++            }
++        } catch (const RtMidiError& err) {
++            d_safe_exception(err.getMessage().c_str(), __FILE__, __LINE__);
++            return false;
++        } DISTRHO_SAFE_EXCEPTION_RETURN("setMidiOutputs", false);
++        return true;
++    }
++
++    bool sendMidiOutputNow(const uint8_t* const data, const uint size) override
++    {
++        const std::lock_guard<std::mutex> g(hdMidiOutLock);
++        for (RtMidiOut& o : hdMidiOuts)
++        {
++            try {
++                o.sendMessage(data, size);
++            } catch (const RtMidiError&) {}
++        }
++        return !hdMidiOuts.empty();
++    }
++   #endif
 +   #endif // DPF_NATIVE_AUDIO_SETTINGS
 +
      static int RtAudioCallback(void* const outputBuffer,
                                #if DISTRHO_PLUGIN_NUM_INPUTS > 0
                                 void* const inputBuffer,
+@@ -422,6 +728,13 @@ struct RtAudioBridge : NativeBridge {
+     {
+         const size_t len = message->size();
+         DISTRHO_SAFE_ASSERT_RETURN(len > 0 && len <= kMaxMIDIInputMessageSize,);
++       #ifdef DPF_NATIVE_AUDIO_SETTINGS
++        if ((*message)[0] >= 0xF8 || (*message)[0] == 0xF2 || (*message)[0] == 0xF1)
++        {
++            dpf_midi_realtime_hook(message->data(), static_cast<unsigned int>(len));
++            return;
++        }
++       #endif
+ 
+         RtAudioBridge* const self = static_cast<RtAudioBridge*>(userData);
+ 
 diff --git a/distrho/src/jackbridge/rtaudio/RtAudio.cpp b/distrho/src/jackbridge/rtaudio/RtAudio.cpp
 index addfc0a6..5173cd3f 100644
 --- a/distrho/src/jackbridge/rtaudio/RtAudio.cpp

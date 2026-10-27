@@ -92,7 +92,15 @@ enum : int {
   ID_SSRC = 2000, ID_GSRC = 2010, ID_SCAT = 2100, ID_GCAT = 2300, ID_SITEM = 2500, ID_GITEM = 2600, ID_LBTN = 2700, ID_TEOK = 2790, ID_TECANCEL, ID_CATPREV, ID_CATNEXT, ID_SLOTCLR,
   // LAB > CONTROL (standalone)
   ID_CGROUP = 3000, ID_CKEY = 3020, ID_CMIDI = 3040, ID_CLEARN = 3060, ID_CFIXED, ID_CMODE = 3070, ID_CDEL = 3080, ID_CRESET = 3090,
+  // 2.0: kits library, song / chain, sample tab, MIDI out and clock, outputs
+  ID_KSRC = 3100, ID_KCAT = 3200, ID_KITEM = 3400, ID_SEQ = 3500, ID_CHCLR = 3505, ID_SONG = 3600, ID_SONGBTN = 4600,
+  ID_SMPTAB = 4700, ID_MIDIOUT = 4800, ID_CLOCK = 4820, ID_OUTS = 4840,
 };
+// LAB tabs: ids are stored in ui.json, the order on screen is TAB_ORDER
+enum { TAB_GROOVE = 0, TAB_SOUND = 1, TAB_KITS = 2, TAB_PERFORM = 3, TAB_PROJECT = 4, TAB_AUDIO = 5, TAB_CONTROL = 6, TAB_SONG = 7, TAB_SAMPLE = 8, NTABS = 9 };
+static const char* const TAB_NAMES[NTABS] = { "GROOVE", "SOUND", "KITS", "PERFORM", "PROJECT", "AUDIO", "CONTROL", "SONG", "SAMPLE" };
+static const int TAB_ORDER_SA[] = { TAB_GROOVE, TAB_SOUND, TAB_SAMPLE, TAB_KITS, TAB_SONG, TAB_PERFORM, TAB_PROJECT, TAB_AUDIO, TAB_CONTROL };
+static const int TAB_ORDER_PL[] = { TAB_GROOVE, TAB_SOUND, TAB_SAMPLE, TAB_KITS, TAB_SONG, TAB_PERFORM, TAB_PROJECT };
 static const int PERF_PARAMS[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 18, 19, 20, 24, 25, 26, 27, 28, 29, 40 };
 constexpr int NPERFP = sizeof(PERF_PARAMS) / sizeof(PERF_PARAMS[0]);
 struct PerfPad { int g; const char* lab; double st; int rt; int vel; double q; };
@@ -142,6 +150,7 @@ class HarderUI : public UI {
   std::string lastSavedProject, lastSavedUi; double nextAutosave = 0;
   bool settingsApplied = false, audioListed = false; std::string chosenDev, audioMsg; int devScroll = 0;
   std::vector<std::string> audioDevs, midiNames; std::vector<bool> midiOpen; std::string currentDev;
+  std::vector<std::string> midiOutNames; std::vector<bool> midiOutOpen;
   // ---- export (worker thread)
   std::thread expThread; std::atomic<bool> expBusy{ false }, expCancel{ false }; std::mutex expMtx; std::string expStatus, expShown;
   int expLoopsIdx = 1; bool expStems = true;
@@ -152,11 +161,12 @@ class HarderUI : public UI {
   std::map<int, FaderInfo> faderRects;
   int cpuTick = 0;
   // ---- user library (Documents/HARDER/Library)
-  int sndSrc = 0, grvSrc = 0;                      // 0 factory, 1 user
-  LibIndex sndLib, grvLib; double nextScan = 0; bool libEnsured = false;
-  std::string sndCat, grvCat;                      // "" = INBOX / UNSORTED (the folder's root)
-  std::string sndSel, grvSel;                      // selected item path ("" = the category is selected)
-  int sndScroll = 0, grvScroll = 0, sndCatScroll = 0, grvCatScroll = 0;
+  int sndSrc = 0, grvSrc = 0, kitSrc = 0;         // 0 factory, 1 user
+  LibIndex sndLib, grvLib, kitLib; double nextScan = 0; bool libEnsured = false;
+  std::string sndCat, grvCat, kitCat;              // "" = INBOX / UNSORTED (the folder's root)
+  std::string sndSel, grvSel, kitSel;              // selected item path ("" = the category is selected)
+  int sndScroll = 0, grvScroll = 0, sndCatScroll = 0, grvCatScroll = 0, kitScroll = 0, kitCatScroll = 0;
+  bool kitWithMaster = true; int sliceSens = 50;
   bool autoLoad = false, autoArmed = false; double nextAutoScan = 0;
   std::set<std::string> watchKnown; std::map<std::string, std::string> watchPending; std::set<std::string> selfWritten;
   std::string confirmKey; double confirmUntil = 0;
@@ -164,7 +174,7 @@ class HarderUI : public UI {
   std::string dragPath; int dragLib = 0; bool dragMoved = false; float dragX = 0, dragY = 0, dragX0 = 0, dragY0 = 0; std::string dragLabel;
   std::vector<std::pair<std::string, R>> catDrop;  // this frame's category chips (drop targets)
   // one-line text field (names)
-  enum TeAct { TE_NONE, TE_NEWCAT_S, TE_RENCAT_S, TE_RENITEM_S, TE_SAVE_S, TE_NEWCAT_G, TE_RENCAT_G, TE_RENITEM_G, TE_SAVE_G };
+  enum TeAct { TE_NONE, TE_NEWCAT_S, TE_RENCAT_S, TE_RENITEM_S, TE_SAVE_S, TE_NEWCAT_G, TE_RENCAT_G, TE_RENITEM_G, TE_SAVE_G, TE_NEWCAT_K, TE_RENCAT_K, TE_RENITEM_K, TE_SAVE_K };
   struct TextEdit { int act = TE_NONE; std::string text, title, arg; } te;
   double lastKeyT = 0; int lastKeyCode = -1; bool sawPuglText = false;
   FontId fCjk = -1; bool cjkTried = false;
@@ -250,7 +260,7 @@ protected:
     edited = true;
     for (int s : heldSteps()) { Step& st = pat().steps[tr][s]; st.on = 1; st.l.set(i, v); core->sendStep(S().cur, tr, s); }
   }
-  static double stepRound(double v, const PDef& d) { return (d.max - d.min) >= 50 ? jsround(v * 10) / 10 : jsround(v); }
+  static double stepRound(double v, const PDef& d) { return (d.max - d.min) >= 50 && d.fmt != FM_SLOT && d.fmt != FM_SLCE ? jsround(v * 10) / 10 : jsround(v); }
   void setVal(int i, double v, bool cont) {
     const PDef& d = defOf(i); if (!d.valid()) return;
     v = clampd(v, d.min, d.max);
@@ -269,6 +279,8 @@ protected:
     } else {
       if (i == 22 || i == 23) { S().tracks[tr].p[i] = v; core->sendParam(tr, i, v); }
       else setBase(tr, i, v, cont);
+      // AUTO slices on a sample without slice points: find them
+      if (i == 51 && jsround(v) == 5 && S().tracks[tr].m == M_SMP) { const SampleData* sd = sampleOf(tr); if (sd && sd->slices.empty()) detectNow(); }
     }
     schedulePreview();
   }
@@ -304,7 +316,7 @@ protected:
   void audition(int t) {
     const auto hs = t == tr ? heldSteps() : std::vector<int>();
     const Step* st = hs.empty() ? nullptr : &pat().steps[t][hs[0]];
-    core->sendAud(t, 110, st && st->on ? &st->l : nullptr); flashUntil[t] = nowMs() + 90;
+    core->sendAud(t, 110, st && st->on ? &st->l : nullptr, hs.empty() ? -1 : hs[0]); flashUntil[t] = nowMs() + 90;
     if (recOn && playing) recPerf(t, nullptr);
   }
   void trackPress(int t) {
@@ -323,8 +335,23 @@ protected:
     if (locks) for (int i = 0; i < NP; i++) if (locks->has(i)) st.l.set(i, locks->v[i]);
     core->sendStep(S().cur, t, s);
   }
+  // sequencing mode: pattern, chain (pattern keys append), song (LAB > SONG)
+  void setSeq(int k) {
+    if (S().seq == k) return;
+    pushUndo(); S().seq = k; core->sendArr();
+    if (k == ARR_CHAIN) toast(S().chain.empty() ? "CHAIN: PRESS PATTERNS IN ORDER" : "CHAIN " + chainText());
+    else if (k == ARR_SONG) toast(S().song.n ? "SONG: " + std::to_string(S().song.n) + " ROWS" : "SONG IS EMPTY: LAB > SONG");
+    else toast("PATTERN MODE");
+  }
+  std::string chainText(int maxN = 40) const { std::string o; for (size_t i = 0; i < core->S->chain.size() && (int)i < maxN; i++) { if (i) o += " "; o += std::to_string(core->S->chain[i] + 1); } if ((int)core->S->chain.size() > maxN) o += " \xe2\x80\xa6"; return o; }
   void patternPress(int p) {
     if (func()) { pushUndo(); S().patterns[p] = pat(); core->sendPattern(p); toast("P" + std::to_string(S().cur + 1) + " COPIED TO P" + std::to_string(p + 1)); return; }
+    if (S().seq == ARR_CHAIN) {   // chain mode: the key appends the pattern
+      if (S().chain.size() >= 64) { toast("CHAIN IS FULL (64)"); return; }
+      pushUndo(); S().chain.push_back((int8_t)p); core->sendArr();
+      if (!playing && S().chain.size() == 1) { S().cur = p; S().bpm = pat().bpm; S().swing = pat().swing; latched.clear(); core->sendSimple(Cmd::CUE, 0, p); core->sendSimple(Cmd::BPM, 0, 0, S().bpm); core->sendSimple(Cmd::SWING, 0, 0, S().swing); if (spage * 16 >= pat().len[tr]) spage = 0; schedulePreview(); }
+      toast("CHAIN " + chainText(16)); return;
+    }
     if (playing) { cue = p == S().cur ? -1 : p; core->sendSimple(Cmd::CUE, 0, p); }
     else {
       S().cur = p; S().bpm = pat().bpm; S().swing = pat().swing; latched.clear();
@@ -336,6 +363,7 @@ protected:
   }
   void play() {
     if (core->hostPlaying.load()) { toast("FOLLOWING LIVE TRANSPORT"); return; }
+    if (core->extClock.load()) { toast("FOLLOWING MIDI CLOCK"); return; }
     core->sendSimple(Cmd::BPM, 0, 0, S().bpm); core->sendSimple(Cmd::SWING, 0, 0, S().swing); core->sendSimple(Cmd::PLAY);
   }
   void stop() { core->sendSimple(Cmd::STOP); cue = -1; }
@@ -413,15 +441,24 @@ protected:
   // ================= user library =================
   std::string sndDir(const std::string& cat) { return cat.empty() ? libSoundsDir() : joinPath(libSoundsDir(), cat); }
   std::string grvDir(const std::string& cat) { return cat.empty() ? libGroovesDir() : joinPath(libGroovesDir(), cat); }
+  std::string kitDir(const std::string& cat) { return cat.empty() ? libKitsDir() : joinPath(libKitsDir(), cat); }
+  // one of the three user libraries (1 sounds, 2 grooves, 3 kits) and its view state
+  struct LibView { LibIndex& L; std::string& cat; std::string& sel; int& scroll; int& catScroll; int idCat, idItem, idArrow, teNewCat, teRenCat, teRenItem; const char* root; };
+  LibView lv(int lib) {
+    if (lib == 1) return { sndLib, sndCat, sndSel, sndScroll, sndCatScroll, ID_SCAT, ID_SITEM, 0, TE_NEWCAT_S, TE_RENCAT_S, TE_RENITEM_S, "INBOX" };
+    if (lib == 2) return { grvLib, grvCat, grvSel, grvScroll, grvCatScroll, ID_GCAT, ID_GITEM, 100, TE_NEWCAT_G, TE_RENCAT_G, TE_RENITEM_G, "UNSORTED" };
+    return { kitLib, kitCat, kitSel, kitScroll, kitCatScroll, ID_KCAT, ID_KITEM, 200, TE_NEWCAT_K, TE_RENCAT_K, TE_RENITEM_K, "UNSORTED" };
+  }
+  std::string libDir(int lib, const std::string& cat) { return lib == 1 ? sndDir(cat) : lib == 2 ? grvDir(cat) : kitDir(cat); }
+  std::string libRootDir(int lib) { return lib == 1 ? libSoundsDir() : lib == 2 ? libGroovesDir() : libKitsDir(); }
   void scanLib(bool force = false) {
     const double now = nowMs(); if (!force && now < nextScan) return;
     nextScan = now + 1500;
     if (!libEnsured) { libEnsured = true; if (!ensureLibrary()) toast("LIBRARY FOLDER UNAVAILABLE"); }
-    const std::string s1 = sndLib.sig, s2 = grvLib.sig;
-    scanLibrary(libSoundsDir(), true, sndLib); scanLibrary(libGroovesDir(), false, grvLib);
-    if (!sndCat.empty() && std::find(sndLib.cats.begin(), sndLib.cats.end(), sndCat) == sndLib.cats.end()) { sndCat.clear(); sndScroll = 0; }
-    if (!grvCat.empty() && std::find(grvLib.cats.begin(), grvLib.cats.end(), grvCat) == grvLib.cats.end()) { grvCat.clear(); grvScroll = 0; }
-    if (sndLib.sig != s1 || grvLib.sig != s2) needRepaint = true;
+    const std::string s1 = sndLib.sig, s2 = grvLib.sig, s3 = kitLib.sig;
+    scanLibrary(libSoundsDir(), true, sndLib); scanLibrary(libGroovesDir(), false, grvLib); scanLibrary(libKitsDir(), false, kitLib, true);
+    for (int lib = 1; lib <= 3; lib++) { LibView v = lv(lib); if (!v.cat.empty() && std::find(v.L.cats.begin(), v.L.cats.end(), v.cat) == v.L.cats.end()) { v.cat.clear(); v.scroll = 0; } }
+    if (sndLib.sig != s1 || grvLib.sig != s2 || kitLib.sig != s3) needRepaint = true;
   }
   const LibItem* findItem(const LibIndex& L, const std::string& path) { for (const LibItem& it : L.items) if (it.path == path) return &it; return nullptr; }
   void loadLibSound(const LibItem& it) {
@@ -469,26 +506,29 @@ protected:
     if (name.empty()) { toast("NAME IS EMPTY"); return; }
     std::string err;
     switch (act) {
-      case TE_NEWCAT_S: case TE_NEWCAT_G: {
-        const std::string dir = act == TE_NEWCAT_S ? sndDir(safeFileName(name)) : grvDir(safeFileName(name));
+      case TE_NEWCAT_S: case TE_NEWCAT_G: case TE_NEWCAT_K: {
+        const int lib = act == TE_NEWCAT_S ? 1 : act == TE_NEWCAT_G ? 2 : 3; LibView v = lv(lib);
+        const std::string dir = libDir(lib, safeFileName(name));
         if (pathExists(dir)) { toast("THAT CATEGORY EXISTS"); break; }
         if (!makeDir(dir)) { toast("COULD NOT CREATE THE FOLDER"); break; }
-        if (act == TE_NEWCAT_S) { sndCat = fileName(dir); sndSel.clear(); sndScroll = 0; } else { grvCat = fileName(dir); grvSel.clear(); grvScroll = 0; }
+        v.cat = fileName(dir); v.sel.clear(); v.scroll = 0;
         toast("CATEGORY " + upper(fileName(dir))); break;
       }
-      case TE_RENCAT_S: case TE_RENCAT_G: {
-        const std::string root = act == TE_RENCAT_S ? libSoundsDir() : libGroovesDir(), from = joinPath(root, arg), to = joinPath(root, safeFileName(name));
+      case TE_RENCAT_S: case TE_RENCAT_G: case TE_RENCAT_K: {
+        const int lib = act == TE_RENCAT_S ? 1 : act == TE_RENCAT_G ? 2 : 3; LibView v = lv(lib);
+        const std::string root = libRootDir(lib), from = joinPath(root, arg), to = joinPath(root, safeFileName(name));
         if (from == to) break;
         if (pathExists(to)) { toast("THAT CATEGORY EXISTS"); break; }
         if (!movePath(from, to)) { toast("COULD NOT RENAME THE FOLDER"); break; }
-        if (act == TE_RENCAT_S) { sndCat = fileName(to); sndSel.clear(); } else { grvCat = fileName(to); grvSel.clear(); }
+        v.cat = fileName(to); v.sel.clear();
         toast("RENAMED"); break;
       }
-      case TE_RENITEM_S: case TE_RENITEM_G: {
-        const LibIndex& L = act == TE_RENITEM_S ? sndLib : grvLib; const LibItem* it = findItem(L, arg); if (!it) break;
+      case TE_RENITEM_S: case TE_RENITEM_G: case TE_RENITEM_K: {
+        const int lib = act == TE_RENITEM_S ? 1 : act == TE_RENITEM_G ? 2 : 3; LibView v = lv(lib);
+        const LibItem* it = findItem(v.L, arg); if (!it) break;
         const LibItem copy = *it; const std::string np = moveItem(copy, dirName(copy.path), err, name);
         if (np.empty()) { toast(upper(err)); break; }
-        markSelf(np); (act == TE_RENITEM_S ? sndSel : grvSel) = np; toast("RENAMED"); break;
+        markSelf(np); v.sel = np; toast("RENAMED"); break;
       }
       case TE_SAVE_S: {
         if (isMaster()) { toast("SELECT A TRACK"); break; }
@@ -502,30 +542,34 @@ protected:
         if (jp.empty()) { toast(upper(err)); break; }
         markSelf(jp); grvSel = jp; toast("SAVED " + upper(name)); break;
       }
+      case TE_SAVE_K: {
+        const std::string jp = saveKit(kitDir(kitCat), name, S(), kitWithMaster, err);
+        if (jp.empty()) { toast(upper(err)); break; }
+        kitSel = jp; toast("KIT SAVED " + upper(name)); break;
+      }
     }
     scanLib(true);
   }
   void moveToCat(int lib, const std::string& path, const std::string& cat) {
-    const LibIndex& L = lib == 1 ? sndLib : grvLib; const LibItem* it = findItem(L, path); if (!it || it->cat == cat) return;
-    const LibItem copy = *it; std::string err; const std::string np = moveItem(copy, lib == 1 ? sndDir(cat) : grvDir(cat), err);
+    LibView v = lv(lib); const LibItem* it = findItem(v.L, path); if (!it || it->cat == cat) return;
+    const LibItem copy = *it; std::string err; const std::string np = moveItem(copy, libDir(lib, cat), err);
     if (np.empty()) { toast(upper(err)); return; }
-    markSelf(np); if (lib == 1) sndSel = np; else grvSel = np;
-    toast("MOVED TO " + (cat.empty() ? std::string(lib == 1 ? "INBOX" : "UNSORTED") : upper(cat))); scanLib(true);
+    markSelf(np); v.sel = np;
+    toast("MOVED TO " + (cat.empty() ? std::string(v.root) : upper(cat))); scanLib(true);
   }
   void deleteSelected(int lib) {
-    const LibIndex& L = lib == 1 ? sndLib : grvLib; std::string& sel = lib == 1 ? sndSel : grvSel; std::string& cat = lib == 1 ? sndCat : grvCat;
-    std::string err;
-    if (!sel.empty()) {
-      const LibItem* it = findItem(L, sel); if (!it) { sel.clear(); return; }
-      if (!confirm("del:" + sel)) return;
+    LibView v = lv(lib); std::string err;
+    if (!v.sel.empty()) {
+      const LibItem* it = findItem(v.L, v.sel); if (!it) { v.sel.clear(); return; }
+      if (!confirm("del:" + v.sel)) return;
       const LibItem copy = *it; if (!trashItem(copy, err)) { toast(upper(err)); return; }
-      sel.clear(); toast("MOVED TO LIBRARY/TRASH");
-    } else if (!cat.empty()) {
-      int n = 0; for (const LibItem& it : L.items) if (it.cat == cat) n++;
-      if (n && !confirm("delcat:" + cat)) return;
-      if (!trashFolder(lib == 1 ? sndDir(cat) : grvDir(cat), err)) { toast(upper(err)); return; }
-      cat.clear(); toast(n ? "CATEGORY MOVED TO LIBRARY/TRASH" : "CATEGORY REMOVED");
-    } else { toast(lib == 1 ? "INBOX CANNOT BE REMOVED" : "UNSORTED CANNOT BE REMOVED"); return; }
+      v.sel.clear(); toast("MOVED TO LIBRARY/TRASH");
+    } else if (!v.cat.empty()) {
+      int n = 0; for (const LibItem& it : v.L.items) if (it.cat == v.cat) n++;
+      if (n && !confirm("delcat:" + v.cat)) return;
+      if (!trashFolder(libDir(lib, v.cat), err)) { toast(upper(err)); return; }
+      v.cat.clear(); toast(n ? "CATEGORY MOVED TO LIBRARY/TRASH" : "CATEGORY REMOVED");
+    } else { toast(std::string(v.root) + " CANNOT BE REMOVED"); return; }
     scanLib(true);
   }
   void importWav(const std::string& fn) {
@@ -546,6 +590,30 @@ protected:
     for (int t = 0; t < NT; t++) core->sendMachine(t);
     core->sendMaster(); for (int t = 0; t < NT; t++) stripSrcLocks(t);
     notifyHostAll(); schedulePreview(); toast(std::string("KIT ") + KITS[k].name);
+  }
+  // a user kit: the eight sounds (samples into free slots), the roles, the master FX if the kit has them (volume kept)
+  void loadLibKit(const LibItem& it) {
+    UserKit k; std::string err;
+    if (!loadKitItem(it, k, &core->cache, err)) { toast(upper(err)); return; }
+    pushUndo();
+    int oldM[NT]; for (int t = 0; t < NT; t++) oldM[t] = S().tracks[t].m;
+    // samples go into slots that hold the same sample, empty slots, or slots the replaced tracks used
+    for (int t = 0; t < NT; t++) { TrackM& tk = S().tracks[t]; tk.m = M_SUB; defaultTrackParams(M_SUB, tk.p); }   // so slotFor sees the old samples as unused
+    bool full = false;
+    for (int t = 0; t < NT; t++) {
+      const SoundDef& d = k.t[t]; TrackM& tk = S().tracks[t]; double p[NP]; std::memcpy(p, d.p, sizeof p);
+      if (d.m == M_SMP) {
+        if (!d.smp) { tk.m = M_SUB; defaultTrackParams(M_SUB, tk.p); tk.pre.clear(); continue; }
+        const int slot = slotFor(d.smp, -1); if (slot < 0) { full = true; tk.m = M_SUB; defaultTrackParams(M_SUB, tk.p); tk.pre.clear(); continue; }
+        S().smp[slot] = core->cache.add(d.smp); p[2] = slot;
+      }
+      tk.m = d.m; std::memcpy(tk.p, p, sizeof p); tk.pre = d.name; S().roles[t] = k.roles[t];
+    }
+    if (k.hasMaster) { const double vol = S().master[19]; std::memcpy(S().master, k.master, sizeof k.master); S().master[19] = vol; core->sendMaster(); }
+    core->sendSamples();
+    for (int t = 0; t < NT; t++) { core->sendMachine(t); if (S().tracks[t].m != oldM[t]) stripSrcLocks(t); }
+    notifyHostAll(); schedulePreview(); kitSel = it.path;
+    toast(full ? "ALL 64 SAMPLE SLOTS IN USE: CLEAN UP SLOTS" : "KIT " + upper(k.name));
   }
   void randomizeSound() {
     if (isMaster()) return; pushUndo();
@@ -631,14 +699,17 @@ protected:
   // ================= files / ui state =================
   void loadUiState() {
     JVal j; if (!parseJson(core->uiState, j)) return;
-    light = j["light"].truthy(); drawer = j["drawer"].truthy(); scaleIdx = (int)clampd(j["scale"].num(2), 0, 5); labTab = (int)clampd(j["tab"].num(0), 0, standalone ? 6 : 4);
+    light = j["light"].truthy(); drawer = j["drawer"].truthy(); scaleIdx = (int)clampd(j["scale"].num(2), 0, 5); labTab = (int)clampd(j["tab"].num(0), 0, NTABS - 1); if (!standalone && (labTab == TAB_AUDIO || labTab == TAB_CONTROL)) labTab = TAB_PROJECT;
     outDb = (float)clampd(j["outDb"].num(0), -80, 0); core->outDb.store(outDb);
     sndSrc = j["sndSrc"].num(0) == 1 ? 1 : 0; grvSrc = j["grvSrc"].num(0) == 1 ? 1 : 0; const bool al = j["autoLoad"].truthy(); if (al != autoLoad) { autoLoad = al; autoArmed = false; }
     sndCat = j["sndCat"].str(); grvCat = j["grvCat"].str();
+    kitSrc = j["kitSrc"].num(0) == 1 ? 1 : 0; kitCat = j["kitCat"].str(); kitWithMaster = !j.has("kitFx") || j["kitFx"].truthy();
+    sliceSens = (int)clampd(j["sliceSens"].num(50), 0, 100);
   }
   void saveUiState() {
     JVal j = JVal::Obj(); j.set("light", JVal::Bool(light)); j.set("drawer", JVal::Bool(drawer)); j.set("scale", JVal::Num(scaleIdx)); j.set("tab", JVal::Num(labTab)); j.set("outDb", JVal::Num(jsround(outDb * 10) / 10));
     j.set("sndSrc", JVal::Num(sndSrc)); j.set("grvSrc", JVal::Num(grvSrc)); j.set("autoLoad", JVal::Bool(autoLoad)); j.set("sndCat", JVal::Str(sndCat)); j.set("grvCat", JVal::Str(grvCat));
+    j.set("kitSrc", JVal::Num(kitSrc)); j.set("kitCat", JVal::Str(kitCat)); j.set("kitFx", JVal::Bool(kitWithMaster)); j.set("sliceSens", JVal::Num(sliceSens));
     std::string s; writeJson(s, j); core->uiState = s;
   }
   void uiFileBrowserSelected(const char* filename) override {
@@ -726,10 +797,12 @@ protected:
   void saveSettings() {
     JVal j = JVal::Obj(); j.set("device", JVal::Str(chosenDev)); j.set("sampleRate", JVal::Num(audioRate())); j.set("bufferSize", JVal::Num(audioBuffer()));
     JVal m = JVal::Arr(); for (size_t i = 0; i < midiNames.size(); i++) if (midiOpen[i]) m.push(JVal::Str(midiNames[i])); j.set("midi", m);
+    JVal mo = JVal::Arr(); for (size_t i = 0; i < midiOutNames.size(); i++) if (midiOutOpen[i]) mo.push(JVal::Str(midiOutNames[i])); j.set("midiOut", mo);
+    j.set("clockIn", JVal::Bool(core->clockIn.load())); j.set("clockOut", JVal::Bool(core->clockOut.load())); j.set("clockOffset", JVal::Num(core->clockOffsetMs.load()));
     std::string out; writeJson(out, j); writeFileAtomic(harderConfigDir() + "settings.json", out);
   }
   void refreshAudioLists() {
-    audioListed = true; getAudioDevices(audioDevs, currentDev); getMidiInputs(midiNames, midiOpen);
+    audioListed = true; getAudioDevices(audioDevs, currentDev); getMidiInputs(midiNames, midiOpen); getMidiOutputs(midiOutNames, midiOutOpen);
   }
   // first idle of the standalone: the audio driver is running with its defaults; switch to the saved settings
   void applySavedSettings() {
@@ -747,6 +820,8 @@ protected:
     if (has && j["midi"].isArr()) { for (size_t i = 0; i < j["midi"].size(); i++) want.push_back(j["midi"][i].str()); }
     else want = names;   // first start: every MIDI input
     setMidiInputs(want);
+    { std::vector<std::string> outs; if (has) for (size_t i = 0; i < j["midiOut"].size(); i++) outs.push_back(j["midiOut"][i].str()); setMidiOutputs(outs); }
+    core->clockIn.store(has && j["clockIn"].truthy()); core->clockOut.store(has && j["clockOut"].truthy()); core->clockOffsetMs.store((int)clampd(has ? j["clockOffset"].num(0) : 0, -50, 100));
     refreshAudioLists();
   }
   void applyAudio(const std::string& dev, uint sr, uint buf) {
@@ -771,6 +846,11 @@ protected:
     std::vector<std::string> want; for (size_t i = 0; i < midiNames.size(); i++) if (i == k ? !midiOpen[i] : midiOpen[i]) want.push_back(midiNames[i]);
     setMidiInputs(want); refreshAudioLists(); saveSettings();
   }
+  void toggleMidiOut(size_t k) {
+    if (k >= midiOutNames.size()) return;
+    std::vector<std::string> want; for (size_t i = 0; i < midiOutNames.size(); i++) if (i == k ? !midiOutOpen[i] : midiOutOpen[i]) want.push_back(midiOutNames[i]);
+    setMidiOutputs(want); refreshAudioLists(); saveSettings();
+  }
   double totalScale() const { return getScaleFactor() * UI_SCALES[scaleIdx]; }
   void applySize() {
     const double s = totalScale(); const uint w = (uint)std::lround(WW * s), h = (uint)std::lround((HCLOSED + (drawer ? LABH : 0)) * s);
@@ -788,7 +868,7 @@ protected:
     Engine& E = *prev; for (int i = 0; i < NSLOT; i++) E.setSample(i, S().smp[i].get());   // S() keeps them alive while rendering
     E.previewReset(S().bpm); E.loadTrack(0, t.m, t.p);
     const int N = (int)(PSR * 2.4); wave.assign(N, 0.f); E.stems[0] = wave.data();
-    E.audition(0, vel > 0 ? vel : 120, st && st->on && st->l.any() ? &st->l : nullptr);
+    { const auto hs = heldSteps(); E.audition(0, vel > 0 ? vel : 120, st && st->on && st->l.any() ? &st->l : nullptr, hs.empty() ? -1 : hs[0]); }
     float dl[512], dr[512];
     for (int p = 0; p < N; p += 512) { const int n = std::min(512, N - p); E.stems[0] = wave.data() + p; E.process(dl, dr, n); }
     E.stems[0] = nullptr;
@@ -805,7 +885,7 @@ protected:
     // the driver stopped (device unplugged, taken by another program): try again every 3 s
     if (standalone && settingsApplied && !isAudioDeviceOpen() && now >= nextAudioRetry) { nextAudioRetry = now + 3000; reconnectAudio(); }
     if (standalone && now >= nextAutosave) { nextAutosave = now + 2000; autosaveNow(); }
-    if (drawer && ((labTab == 1 && sndSrc == 1) || (labTab == 0 && grvSrc == 1))) scanLib();
+    if (drawer && ((labTab == TAB_SOUND && sndSrc == 1) || (labTab == TAB_GROOVE && grvSrc == 1) || (labTab == TAB_KITS && kitSrc == 1))) scanLib();
     if (autoLoad) autoLoadScan();
     if (standalone) { pollMidi();
 #ifdef HARDER_TEST_MIDI_INJECT
@@ -814,7 +894,7 @@ protected:
     }
     if (te.act != TE_NONE && std::fmod(now, 500) < 30) needRepaint = true;   // caret
     if (midiLearn || keyLearn.k != AC_NONE) needRepaint = true;   // blinking learn state
-    core->gcSamples();
+    core->gcSamples(); recPoll();
     if (now >= nextPrune) { nextPrune = now + 5000; pinUndoSamples(); core->pruneCache(); }
     { std::lock_guard<std::mutex> eg(expMtx); if (expStatus != expShown) { expShown = expStatus; needRepaint = true; } }
     if (core->modelSeq.load() != seenModelSeq) {   // project replaced by the host (state load)
@@ -970,7 +1050,7 @@ protected:
   }
   struct SlInfo { R r; int mn, mx; };
   std::map<int, SlInfo> sliderRects;
-  int* sliderVar(int id) { switch (id) { case ID_DEN: return &denPct; case ID_VAR: return &varPct; case ID_EK: return &eK; case ID_ER: return &eR; } return nullptr; }
+  int* sliderVar(int id) { switch (id) { case ID_DEN: return &denPct; case ID_VAR: return &varPct; case ID_EK: return &eK; case ID_ER: return &eR; case ID_SMPTAB + 10: return &sliceSens; } return nullptr; }
   int denPct = 55, varPct = 40;
   void sliderSet(int id, R track, int mn, int mxv, int& v) {
     const float u = clampd((mx - track.x - 7) / (track.w - 14), 0, 1); v = (int)jsround(mn + u * (mxv - mn));
@@ -1032,8 +1112,8 @@ protected:
   // ================= frame =================
   void frame() {
     sliderRects.clear(); faderRects.clear(); catDrop.clear();
-    if (keyLearn.k != AC_NONE && !(drawer && labTab == 6)) keyLearn = Action();
-    if (te.act != TE_NONE && !(drawer && ((labTab == 1 && sndSrc == 1 && teActive(1)) || (labTab == 0 && grvSrc == 1 && teActive(2))))) te = TextEdit();   // field no longer visible
+    if (keyLearn.k != AC_NONE && !(drawer && labTab == TAB_CONTROL)) keyLearn = Action();
+    if (te.act != TE_NONE && !(drawer && ((labTab == TAB_SOUND && sndSrc == 1 && teActive(1)) || (labTab == TAB_GROOVE && grvSrc == 1 && teActive(2)) || (labTab == TAB_KITS && kitSrc == 1 && teActive(3))))) te = TextEdit();   // field no longer visible
     if (D()) {
       beginPath(); rect(0, 0, WW, HCLOSED + (drawer ? LABH : 0)); fillColor(th.page); fill();
     }
@@ -1052,6 +1132,7 @@ protected:
     if (standalone && midiLearn) std::snprintf(b, sizeof b, "MIDI LEARN  \xc2\xb7  %s", learnAct.k == AC_NONE ? "CLICK A CONTROL" : "MOVE THE CONTROLLER");
     else if (standalone) {
       if (!isAudioDeviceOpen()) std::snprintf(b, sizeof b, "NO AUDIO OUTPUT  \xc2\xb7  LAB > AUDIO");
+      else if (core->extClock.load()) std::snprintf(b, sizeof b, "MIDI CLOCK %.1f BPM  \xc2\xb7  %u HZ", core->extBpm.load(), audioRate());
       else std::snprintf(b, sizeof b, "%s  \xc2\xb7  %u HZ  \xc2\xb7  %u", playing ? "PLAYING" : "STANDALONE", audioRate(), audioBuffer());
     } else if (hs || hp) std::snprintf(b, sizeof b, "LIVE SYNC  %.1f BPM", core->hostBpm.load()); else std::snprintf(b, sizeof b, playing ? "INTERNAL CLOCK" : "WAITING FOR LIVE  \xc2\xb7  PLAY = INTERNAL");
     char c[32]; std::snprintf(c, sizeof c, "DSP %.1f%%", core->cpuPermille.load() / 10.0);   // plugin audio time / buffer time, 0.5 s average
@@ -1075,18 +1156,34 @@ protected:
       }
     }
     const float x0 = X + 22, y0 = Y;
-    // patterns
+    // patterns, and the sequencing mode: PTN / CHN (chain) / SNG (song)
     label(x0, y0 + 28, "PATTERN");
+    { static const char* const SQ[3] = { "PTN", "CHN", "SNG" };
+      for (int k = 0; k < 3; k++) if (chip(ID_SEQ + k, R(x0 + 87 + k * 35, y0 + 15, 33, 17), SQ[k], S().seq == k, true)) setSeq(k); }
+    if (S().seq != ARR_OFF) {
+      const int ar = playing ? core->eng->fb.arrRow.load() : -1;
+      std::string line; Color col = th.print;
+      if (S().seq == ARR_CHAIN) {
+        if (S().chain.empty()) line = "CHAIN EMPTY \xc2\xb7 PRESS PATTERNS";
+        else { const int n = (int)S().chain.size(); line = std::to_string(ar >= 0 && ar < n ? ar + 1 : 0) + "/" + std::to_string(n) + "  " + chainText(14); if (ar >= 0) col = th.printHi; }
+        if (chip(ID_CHCLR, R(x0 + 171, y0 + 110, 18, 15), "\xc3\x97", false, true, S().chain.empty())) { pushUndo(); S().chain.clear(); core->sendArr(); toast("CHAIN CLEARED"); }
+      } else {
+        if (!S().song.n) line = "SONG EMPTY \xc2\xb7 LAB > SONG";
+        else if (ar >= 0) { line = "ROW " + std::to_string(ar + 1) + "/" + std::to_string(S().song.n) + "  \xc3\x97" + std::to_string(core->eng->fb.arrRep.load() + 1) + "/" + std::to_string(S().song.rows[std::min(ar, S().song.n - 1)].reps); col = th.printHi; }
+        else line = "SONG \xc2\xb7 " + std::to_string(S().song.n) + " ROWS \xc2\xb7 FROM ROW " + std::to_string(S().song.start + 1);
+      }
+      if (D()) { font(fPrint, 10.5f, 1.0f); txt(x0, y0 + 122, fit(line, S().seq == ARR_CHAIN ? 166 : 189), col); }
+    }
     for (int p = 0; p < NPAT; p++) {
       bool has = false; for (int t = 0; t < NTR && !has; t++) for (int s = 0; s < NSTEP; s++) if (S().patterns[p].steps[t][s].on) { has = true; break; }
       R r(x0 + (p % 4) * 49, y0 + 38 + (p / 4) * 34, 43, 27);
       if (key(ID_PAT + p, r, "P" + std::to_string(p + 1), (p == S().cur ? K_SEL : 0) | (has ? K_HAS : 0) | (p == cue ? K_CUE : 0) | K_DOT | (p == S().cur && playing ? K_LIT : 0))) patternPress(p);
     }
     // tempo, swing, length
-    label(x0, y0 + 122, "TEMPO / SWING");
-    const bool hs = core->hostSynced.load() || core->hostPlaying.load();
+    if (S().seq == ARR_OFF) label(x0, y0 + 122, "TEMPO / SWING");   // chain / song: their readout is drawn there instead
+    const bool hs = core->hostSynced.load() || core->hostPlaying.load(), ec = core->extClock.load();
     char b[32];
-    std::snprintf(b, sizeof b, "%.1f", hs ? core->hostBpm.load() : S().bpm); numBox(ID_BPM, R(x0, y0 + 132, 91, 46), hs ? "BPM \xc2\xb7 LIVE" : "BPM", b, hs);
+    std::snprintf(b, sizeof b, "%.1f", ec ? core->extBpm.load() : hs ? core->hostBpm.load() : S().bpm); numBox(ID_BPM, R(x0, y0 + 132, 91, 46), ec ? "BPM \xc2\xb7 CLOCK" : hs ? "BPM \xc2\xb7 LIVE" : "BPM", b, hs || ec);
     std::snprintf(b, sizeof b, "%d%%", (int)jsround(S().swing)); numBox(ID_SWING, R(x0 + 98, y0 + 132, 91, 46), "SWING", b);
     label(x0, y0 + 198, "LENGTH \xc2\xb7 SPEED");
     numBox(ID_LEN, R(x0, y0 + 208, 59, 46), "LEN", std::to_string(pat().len[tr]));
@@ -1118,12 +1215,14 @@ protected:
       R r(X + 456 + t * 75.5f, y0 + 314, 69, 41);
       if (press(ID_TRACK + t, r)) trackPress(t);
       if (D()) {
-        const bool sel = tr == t, mu = t < 8 && S().mutes[t], so = soloTr >= 0 && t < 8 && t != soloTr;   // silenced by mute or by another track's solo
+        const bool rowMuted = playing && t < 8 && ((core->eng->fb.rowMute.load() >> t) & 1);   // muted by the song row
+        const bool sel = tr == t, mu = t < 8 && (S().mutes[t] || rowMuted), so = soloTr >= 0 && t < 8 && t != soloTr;   // silenced by mute or by another track's solo
         if (mu || so) globalAlpha(.45f);
         rrect(R(r.x, r.y + 2, r.w, r.h), 6, th.capLo); vgrad(r, 6, th.capHi, th.cap); rstroke(r, 6, sel ? th.led : th.line);
         font(fNum, 13); txt(r.x + 7, r.y + 16, t < 8 ? std::to_string(t + 1) : "FX", sel ? th.selFg : th.printHi);
         if (mu) { font(fNum, 10); txt(r.x + 18, r.y + 16, "M", th.warn); }
         if (t == soloTr) { font(fNum, 10); txt(r.x + (mu ? 28 : 18), r.y + 16, "S", th.led); }
+        if (!standalone && t < 8 && S().outs[t]) { font(fNum, 9); txt(r.r() - 14, r.y + 16, "O", th.ok, ALIGN_RIGHT | ALIGN_BASELINE); }
         std::string nm = t < 8 ? (S().tracks[t].pre.size() ? upper(S().tracks[t].pre) : MACH_NAMES[S().tracks[t].m]) : "MASTER";
         font(fPrint, 10, 0.8f); txt(r.x + 7, r.y + 29, fit(nm, r.w - 14), th.print);
         ledDot(r.r() - 7, r.y + 7, t < 8 && flashUntil[t] > 0, th.led);
@@ -1394,6 +1493,7 @@ protected:
         if (mpage == 0) note = "FX TRACK \xc2\xb7 HOLD A STEP TO LOCK MASTER FX"; else if (mpage == 1) note = "8-LINE FEEDBACK REVERB"; else if (mpage == 2) note = "GLUE \xc2\xb7 DRIVE \xc2\xb7 DJ FILTER \xc2\xb7 LIMITER";
         else note = std::string("SIDECHAIN FROM ") + DUCK_SRC[(int)clampd(jsround(S().master[24]), 0, 9)] + " \xc2\xb7 DUCK AMOUNT PER TRACK ON AMP PAGE";
       } else if (page == 0) note = hs.size() ? "STEP: COND, MICRO-TIMING, RETRIG" : "DEFAULTS FOR NEW TRIGS. HOLD A STEP TO LOCK ITS OWN";
+      else if (page == 1 && S().tracks[tr].m == M_SMP) note = "SLCS: SLICES (OFF / 8-64 / AUTO) \xc2\xb7 SLCE: STEP = SLICE OF THE STEP \xc2\xb7 LAB > SAMPLE";
       else if (page == 1) note = hs.size() ? "SLIDE TO NEXT TRIG \xc2\xb7 LOCKS APPLY ONLY IF LCND / LPRB PASS" : "HOLD A STEP: SLIDE AND CONDITIONAL LOCKS";
       else if (page == 2 && S().tracks[tr].m == M_SMP) { const Step* st = heldStepPtr(); const SampleData* sd = sampleOf(tr, st); char b[160];
         if (sd) std::snprintf(b, sizeof b, "S%02d %s \xc2\xb7 %.2fS \xc2\xb7 %.1fKHZ \xc2\xb7 %s", slotOf(tr, st) + 1, upper(sd->name).c_str(), sd->seconds(), sd->rate / 1000, upper(sampleFmtName(sd->fmt)).c_str());
@@ -1466,7 +1566,11 @@ protected:
     font(fOled, 9);
     if (!sd || sd->len < 2) { txt(m.cx(), cy - 8, "NO SAMPLE IN THIS SLOT", th.oledMid, ALIGN_CENTER | ALIGN_BASELINE); return; }
     auto gv = [&](int i) { return getVal(i); };
-    const double a = clampd(gv(3), 0, 127) / 127, e = std::max(a, clampd(gv(4), 0, 127) / 127), lf = clampd(gv(6), 0, 127) / 127; const int mode = (int)clampd(jsround(gv(5)), 0, 3);
+    // the slice this step plays (the whole sample without slices): STRT / END / LOOP are inside it
+    const int slc = (int)clampd(jsround(gv(51)), 0, 5); double lo = 0, hi = sd->len;
+    { const auto hs = heldSteps(); if (slc > 0) MSmp::sliceRange(*sd, slc, (int)clampd(jsround(gv(52)), 0, 64), hs.empty() ? 0 : hs[0], lo, hi); }
+    const double u0 = lo / sd->len, uw = (hi - lo) / sd->len;
+    const double a = u0 + clampd(gv(3), 0, 127) / 127 * uw, e = std::max(a, u0 + clampd(gv(4), 0, 127) / 127 * uw), lf = clampd(gv(6), 0, 127) / 127; const int mode = (int)clampd(jsround(gv(5)), 0, 3);
     const float amp = (bot - top) / 2 / std::max(0.05f, sd->peak);
     beginPath();
     for (int x = 0; x < (int)w; x++) {
@@ -1482,7 +1586,7 @@ protected:
     const bool rev = mode == 1 || mode == 3;
     if (mode >= 2) { const float xl = rev ? xe - (float)(lf * (e - a)) * w : xa + (float)(lf * (e - a)) * w; beginPath(); for (float yy = top; yy < bot; yy += 5) rect(xl - .5f, yy, 1, 3); fillColor(th.oledMid); fill(); txt(xl + 3, top + 6, "L", th.oledMid); }
     { const float ax = rev ? xe - 4 : xa + 4, dir = rev ? -1.f : 1.f; beginPath(); moveTo(ax, top - 4); lineTo(ax + dir * 6, top - 1); lineTo(ax, top + 2); closePath(); fillColor(th.oled); fill(); }
-    char b[96]; std::snprintf(b, sizeof b, "%s \xc2\xb7 %.3fS PLAYED", SMP_MODE_NAMES[mode], (e - a) * sd->seconds());
+    char b[96]; if (slc > 0) std::snprintf(b, sizeof b, "%s \xc2\xb7 SLICE \xc2\xb7 %.3fS PLAYED", SMP_MODE_NAMES[mode], (e - a) * sd->seconds()); else std::snprintf(b, sizeof b, "%s \xc2\xb7 %.3fS PLAYED", SMP_MODE_NAMES[mode], (e - a) * sd->seconds());
     txt(m.x + 6, m.b() - 3, b, th.oledMid);
     txt(m.r() - 6, m.b() - 3, toFixed(sd->seconds(), 2) + "S", th.oledMid, ALIGN_RIGHT | ALIGN_BASELINE);
   }
@@ -1567,19 +1671,24 @@ protected:
   void lab() {
     const float y0 = HCLOSED - 6; R box(PX, y0, PW, LABH - 14);
     if (D()) { rrect(box, 12, th.modBg); rstroke(box, 12, th.modEdge); }
-    static const char* const TABS[7] = { "GROOVE", "SOUND", "KITS", "PERFORM", "PROJECT", "AUDIO", "CONTROL" };
-    const int ntabs = standalone ? 7 : 5;
+    const int* order = standalone ? TAB_ORDER_SA : TAB_ORDER_PL; const int ntabs = standalone ? 9 : 7;
     for (int k = 0; k < ntabs; k++) {
-      R r(box.x + 14, box.y + 16 + k * 40, 118, 32);
-      if (clicked(ID_TAB + k, r)) { labTab = k; saveUiState(); }
+      const int id = order[k]; R r(box.x + 14, box.y + 12 + k * 37, 118, 30);
+      if (clicked(ID_TAB + id, r)) { labTab = id; saveUiState(); }
       if (D()) {
-        if (k == labTab) { rrect(r, 7, th.cap); rstroke(r, 7, th.led); }
-        font(fMark, 10, 2.4f); txt(r.x + 12, r.cy() + 4, TABS[k], k == labTab ? th.printHi : th.print);
+        if (id == labTab) { rrect(r, 7, th.cap); rstroke(r, 7, th.led); }
+        font(fMark, 10, 2.4f); txt(r.x + 12, r.cy() + 4, TAB_NAMES[id], id == labTab ? th.printHi : th.print);
       }
     }
     if (D()) { beginPath(); rect(box.x + 146, box.y + 14, 1, box.h - 28); fillColor(th.modEdge); fill(); }
     const R c(box.x + 164, box.y + 14, box.w - 182, box.h - 28);
-    switch (labTab) { case 0: labGroove(c); break; case 1: labSound(c); break; case 2: labKits(c); break; case 3: labPerform(c); break; case 4: labProject(c); break; case 6: if (standalone) labControl(c); else labProject(c); break; default: if (standalone) labAudio(c); else labProject(c); }
+    switch (labTab) {
+      case TAB_GROOVE: labGroove(c); break; case TAB_SOUND: labSound(c); break; case TAB_KITS: labKits(c); break; case TAB_PERFORM: labPerform(c); break;
+      case TAB_SONG: labSong(c); break; case TAB_SAMPLE: labSample(c); break;
+      case TAB_CONTROL: if (standalone) labControl(c); else labProject(c); break;
+      case TAB_AUDIO: if (standalone) labAudio(c); else labProject(c); break;
+      default: labProject(c);
+    }
     if (D() && drag.kind == 5 && dragMoved) {   // the dragged item follows the mouse
       font(fPrintB, 12, 0.2f); const std::string l = fit(dragLabel, 220); const R g(dragX + 12, dragY - 12, txtW(l) + 22, 24);
       rrect(R(g.x, g.y + 3, g.w, g.h), 7, th.shadow); rrect(g, 7, th.cap); rstroke(g, 7, th.led); txt(g.x + 11, g.cy() + 4.5f, l, th.printHi);
@@ -1669,6 +1778,7 @@ protected:
   std::map<std::string, std::pair<int64_t, std::string>> tagCache;   // path -> (mtime, tag shown on the item)
   std::string itemTag(const LibItem& it) {
     if (it.kind == LK_WAV) return "WAV";
+    if (it.kind == LK_KIT) return pathExists(kitSamplesDir(it.path)) ? "KIT+S" : "KIT";
     auto c = tagCache.find(it.path); if (c != tagCache.end() && c->second.first == it.mtime) return c->second.second;
     std::string tag = "?", txt; JVal j;
     if (it.size < (64u << 20) && readTextFile(it.path, txt) && parseJson(txt, j) && j.isObj()) {
@@ -1677,7 +1787,7 @@ protected:
     }
     tagCache[it.path] = { it.mtime, tag }; return tag;
   }
-  bool teActive(int lib) const { return lib == 1 ? (te.act >= TE_NEWCAT_S && te.act <= TE_SAVE_S) : (te.act >= TE_NEWCAT_G && te.act <= TE_SAVE_G); }
+  bool teActive(int lib) const { return lib == 1 ? (te.act >= TE_NEWCAT_S && te.act <= TE_SAVE_S) : lib == 2 ? (te.act >= TE_NEWCAT_G && te.act <= TE_SAVE_G) : (te.act >= TE_NEWCAT_K && te.act <= TE_SAVE_K); }
   void teBar(R r) {
     if (D()) { font(fPrint, 11, 1.5f); }
     font(fPrint, 11, 1.5f); const float tw = txtW(upper(te.title)) + 14;
@@ -1695,9 +1805,9 @@ protected:
   }
   // category chips: the root (INBOX / UNSORTED) first, + NEW last; each one is a drop target for a dragged item
   void catRow(int lib, R r) {
-    const LibIndex& L = lib == 1 ? sndLib : grvLib; std::string& cat = lib == 1 ? sndCat : grvCat; std::string& sel = lib == 1 ? sndSel : grvSel;
-    int& sc = lib == 1 ? sndCatScroll : grvCatScroll; int& scroll = lib == 1 ? sndScroll : grvScroll;
-    const int idBase = lib == 1 ? ID_SCAT : ID_GCAT; const char* rootName = lib == 1 ? "INBOX" : "UNSORTED";
+    LibView v = lv(lib); const LibIndex& L = v.L; std::string& cat = v.cat; std::string& sel = v.sel;
+    int& sc = v.catScroll; int& scroll = v.scroll;
+    const int idBase = v.idCat; const char* rootName = v.root;
     std::vector<std::string> cats{ "" }; for (const std::string& c : L.cats) cats.push_back(c);
     std::map<std::string, int> count; for (const LibItem& it : L.items) count[it.cat]++;
     auto lab = [&](const std::string& c) { const std::string n = c.empty() ? rootName : c; const int k = count[c]; return k ? n + " " + std::to_string(k) : n; };
@@ -1714,32 +1824,33 @@ protected:
       const std::string& c = cats[k]; const std::string l = lab(c); const float w = chipW(l, true); const R cr(x, r.y, w, r.h);
       const bool hover = drag.kind == 5 && dragMoved && dragLib == lib && cr.in(dragX, dragY);
       if (chip(idBase + std::min(k, 190), cr, l, c == cat || hover, true)) {
-        if (dbl && !c.empty() && c == cat) startEdit(lib == 1 ? TE_RENCAT_S : TE_RENCAT_G, "RENAME CATEGORY", c, c);
+        if (dbl && !c.empty() && c == cat) startEdit(v.teRenCat, "RENAME CATEGORY", c, c);
         else { cat = c; sel.clear(); scroll = 0; }
       }
       catDrop.push_back({ c, cr }); x += w + 5;
     }
     if (over) {
       const R pv(r.r() - newW - 2 * arrW - 10, r.y, arrW, r.h), nx(r.r() - newW - arrW - 6, r.y, arrW, r.h);
-      if (chip(ID_CATPREV + (lib == 1 ? 0 : 100), pv, "<", false, true, sc == 0)) sc--;
-      if (chip(ID_CATNEXT + (lib == 1 ? 0 : 100), nx, ">", false, true, sc + nfit >= (int)cats.size())) sc++;
+      if (chip(ID_CATPREV + v.idArrow, pv, "<", false, true, sc == 0)) sc--;
+      if (chip(ID_CATNEXT + v.idArrow, nx, ">", false, true, sc + nfit >= (int)cats.size())) sc++;
     }
-    if (chip(idBase + 199, R(r.r() - newW, r.y, newW, r.h), "+ NEW", false, true)) startEdit(lib == 1 ? TE_NEWCAT_S : TE_NEWCAT_G, "NEW CATEGORY", "");
+    if (chip(idBase + 199, R(r.r() - newW, r.y, newW, r.h), "+ NEW", false, true)) startEdit(v.teNewCat, "NEW CATEGORY", "");
   }
   // items of the current category; click = load, drag onto a category = move there
   void itemGrid(int lib, R lr, int cols, int rows, float chh) {
-    const LibIndex& L = lib == 1 ? sndLib : grvLib; const std::string& cat = lib == 1 ? sndCat : grvCat; std::string& sel = lib == 1 ? sndSel : grvSel;
-    int& scroll = lib == 1 ? sndScroll : grvScroll; const int idBase = lib == 1 ? ID_SITEM : ID_GITEM;
+    LibView v = lv(lib); const LibIndex& L = v.L; const std::string& cat = v.cat; std::string& sel = v.sel;
+    int& scroll = v.scroll; const int idBase = v.idItem;
     std::vector<const LibItem*> list; for (const LibItem& it : L.items) if (it.cat == cat) list.push_back(&it);
     const float cw = (lr.w - (cols - 1) * 6) / cols;
     const int maxScroll = std::max(0, ((int)list.size() + cols - 1) / cols - rows);
     if (scrolled(lr)) scroll = (int)clampd(scroll + (wheel > 0 ? -1 : 1), 0, maxScroll);
     if (scroll > maxScroll) scroll = maxScroll;
     if (list.empty() && D()) {
-      const std::string where = lib == 1 ? "Library/Sounds" + (cat.empty() ? std::string() : "/" + cat) : "Library/Grooves" + (cat.empty() ? std::string() : "/" + cat);
+      const std::string where = std::string(lib == 1 ? "Library/Sounds" : lib == 2 ? "Library/Grooves" : "Library/Kits") + (cat.empty() ? std::string() : "/" + cat);
       para(lr.x + 4, lr.y + 6, lr.w - 8, lib == 1
         ? "Nothing here yet. SAVE SOUND stores the selected track's sound in this category, IMPORT WAV copies a WAV file here and loads it. Other programs can write WAV files or HARDER sound files into Documents/HARDER/" + where + "; they show up here within two seconds."
-        : "Nothing here yet. SAVE PATTERN stores the current pattern in this category. Other programs can write HARDER groove files into Documents/HARDER/" + where + ".", th.print, 12);
+        : lib == 2 ? "Nothing here yet. SAVE PATTERN stores the current pattern in this category. Other programs can write HARDER groove files into Documents/HARDER/" + where + "."
+        : "Nothing here yet. SAVE KIT stores the eight sounds (with their samples) in this category: Documents/HARDER/" + where + ".", th.print, 12);
     }
     for (int k = scroll * cols; k < (int)list.size() && k < (scroll + rows) * cols; k++) {
       const LibItem& it = *list[k]; const int vk = k - scroll * cols; const R r(lr.x + (vk % cols) * (cw + 6), lr.y + (vk / cols) * (chh + 6), cw, chh);
@@ -1747,7 +1858,7 @@ protected:
       if (press(id, r)) { drag = Drag(); drag.id = id; drag.kind = 5; dragPath = it.path; dragLib = lib; dragMoved = false; dragX = dragX0 = mx; dragY = dragY0 = my; dragLabel = it.name; }
       if (ph == PH_RELEASE && pressedId == id && r.in(mx, my) && !dragMoved) {
         sel = it.path; const LibItem copy = it;
-        if (lib == 1) loadLibSound(copy); else loadLibGroove(copy);
+        if (lib == 1) loadLibSound(copy); else if (lib == 2) loadLibGroove(copy); else loadLibKit(copy);
       }
       if (D()) {
         const bool isSel = sel == it.path; rstroke(r, 7, isSel ? th.led : th.preEdge);
@@ -1763,11 +1874,11 @@ protected:
       for (auto& cd : catDrop) if (cd.second.in(mx, my)) { const std::string p = dragPath, c = cd.first; moveToCat(lib, p, c); break; }
   }
   void renameOrDelete(int lib, bool del) {
-    const LibIndex& L = lib == 1 ? sndLib : grvLib; const std::string& sel = lib == 1 ? sndSel : grvSel; const std::string& cat = lib == 1 ? sndCat : grvCat;
+    LibView v = lv(lib);
     if (del) { deleteSelected(lib); return; }
-    if (!sel.empty()) { const LibItem* it = findItem(L, sel); if (it) startEdit(lib == 1 ? TE_RENITEM_S : TE_RENITEM_G, lib == 1 ? "RENAME SOUND" : "RENAME GROOVE", it->name, sel); }
-    else if (!cat.empty()) startEdit(lib == 1 ? TE_RENCAT_S : TE_RENCAT_G, "RENAME CATEGORY", cat, cat);
-    else toast("SELECT A SOUND OR A CATEGORY");
+    if (!v.sel.empty()) { const LibItem* it = findItem(v.L, v.sel); if (it) startEdit(v.teRenItem, lib == 1 ? "RENAME SOUND" : lib == 2 ? "RENAME GROOVE" : "RENAME KIT", it->name, v.sel); }
+    else if (!v.cat.empty()) startEdit(v.teRenCat, "RENAME CATEGORY", v.cat, v.cat);
+    else toast(lib == 1 ? "SELECT A SOUND OR A CATEGORY" : lib == 2 ? "SELECT A GROOVE OR A CATEGORY" : "SELECT A KIT OR A CATEGORY");
   }
   void labSoundUser(R c) {
     const bool modal = teActive(1); const R bar(c.x, c.y + 120, c.w - 160, 24);
@@ -2049,7 +2160,10 @@ protected:
     if (D()) { font(fPrint, 9.5f, 0.6f); txt(rx, c.y + 314, fit("CC 120/123 = ALL SOUND OFF \xc2\xb7 PROGRAM CHANGE 1-8 = PATTERN", rw), th.print); }
   }
   void labKits(R c) {
-    h2(c.x, c.y + 12, "KITS", "one per material \xc2\xb7 replace all 8 sounds, keep patterns");
+    h2(c.x, c.y + 12, "KITS", kitSrc == 0 ? "one per material \xc2\xb7 replace all 8 sounds, keep patterns" : "your kits \xc2\xb7 all 8 sounds with their samples");
+    { const float wf = chipW("FACTORY", true), wu = chipW("USER", true); float x = c.r() - wf - wu - 5;
+      for (int k = 0; k < 2; k++) { const char* l = k ? "USER" : "FACTORY"; const float w = k ? wu : wf; if (chip(ID_KSRC + k, R(x, c.y - 2, w, 20), l, kitSrc == k, true)) { kitSrc = k; saveUiState(); if (k) scanLib(true); } x += w + 5; } }
+    if (kitSrc == 1) { labKitsUser(c); return; }
     const float cw = (c.w - 3 * 10) / 4, chh = 82;
     for (int k = 0; k < NKITS; k++) {
       R r(c.x + (k % 4) * (cw + 10), c.y + 30 + (k / 4) * (chh + 10), cw, chh);
@@ -2060,8 +2174,195 @@ protected:
         para(r.x + 12, r.y + 32, cw - 24, KITS[k].desc, th.print, 12);
       }
     }
-    para(c.x, c.y + 230, c.w, "Kits set the eight sounds and the master FX character. The master volume stays where it is; patterns are untouched.", th.print, 12);
+    para(c.x, c.y + 230, c.w, "Kits set the eight sounds and the master FX character. The master volume stays where it is; patterns are untouched. USER: save your own kits (SAMPLE tracks keep their samples).", th.print, 12);
   }
+  void labKitsUser(R c) {
+    const bool modal = teActive(3); const R bar(c.x, c.y + 30, c.w - 172, 24);
+    if (modal && !D()) { teBar(bar); if (ph == PH_PRESS || ph == PH_SCROLL) consumed = true; }
+    if (modal && D()) globalAlpha(.3f);
+    catRow(3, R(c.x, c.y + 30, c.w - 172, 22));
+    itemGrid(3, R(c.x, c.y + 62, c.w - 184, 6 * 36 - 6), 3, 6, 30);
+    const float bx = c.r() - 148;
+    if (btn(ID_LBTN + 20, R(bx, c.y + 28, 148, 26), "SAVE KIT", true)) startEdit(TE_SAVE_K, "SAVE KIT AS", "Kit " + std::to_string((int)kitLib.items.size() + 1));
+    if (btn(ID_LBTN + 21, R(bx, c.y + 58, 71, 26), "RENAME")) renameOrDelete(3, false);
+    if (btn(ID_LBTN + 22, R(bx + 77, c.y + 58, 71, 26), "DELETE")) renameOrDelete(3, true);
+    if (btn(ID_LBTN + 23, R(bx, c.y + 88, 148, 26), "OPEN FOLDER")) { scanLib(true); openInFileManager(kitDir(kitCat)); }
+    { bool a = kitWithMaster; if (check(ID_LBTN + 24, R(bx, c.y + 124, 148, 20), "Save master FX", a)) { kitWithMaster = a; saveUiState(); } }
+    if (D()) {
+      para(bx, c.y + 152, 148, "A kit holds the eight tracks' sounds and roles. SAMPLE tracks keep their samples; loading puts them into free slots.", th.print, 11);
+      std::string info = "CLICK = LOAD ALL 8 TRACKS (UNDO WITH UNDO) \xc2\xb7 DRAG ONTO A CATEGORY = MOVE \xc2\xb7 DOUBLE-CLICK A CATEGORY = RENAME";
+      if (!kitSel.empty()) { const LibItem* it = findItem(kitLib, kitSel); if (it) info = upper(it->name) + " \xc2\xb7 " + (it->cat.empty() ? "UNSORTED" : upper(it->cat)); }
+      font(fPrint, 10.5f, 1.0f); txt(c.x, c.b() - 2, fit(info, c.w - 172), th.print);
+    }
+    if (modal && D()) { globalAlpha(1); teBar(bar); }
+  }
+  // ================= LAB > SAMPLE: slices and resampling =================
+  // the SAMPLE track's sample, replaced by a copy with other slice points (undo restores the old one)
+  void setSlicePoints(const std::vector<int>& pts, const std::string& msg) {
+    if (isMaster() || S().tracks[tr].m != M_SMP) { toast("SELECT A SAMPLE TRACK"); return; }
+    const int slot = slotOf(tr); const SampleRef cur = S().smp[slot]; if (!cur) { toast("NO SAMPLE IN THIS SLOT"); return; }
+    pushUndo(); S().smp[slot] = core->cache.add(withSlices(*cur, pts)); core->sendSamples(); schedulePreview(); toast(msg);
+  }
+  void detectNow() {
+    if (isMaster() || S().tracks[tr].m != M_SMP || !S().smp[slotOf(tr)]) { toast("SELECT A SAMPLE TRACK"); return; }
+    const std::vector<int> pts = detectSlices(*S().smp[slotOf(tr)], sliceSens);
+    setSlicePoints(pts, std::to_string(pts.size()) + " SLICES FOUND");
+    if (S().tracks[tr].p[51] != 5) setVal(51, 5, false);
+  }
+  // resampling: buffers for the audio thread (60 s at the engine rate), owned here
+  struct RecBuf { std::unique_ptr<float[]> L, R; int64_t cap = 0; uint64_t seq = 0, armSeq = 0; };
+  RecBuf recBuf; std::vector<RecBuf> recRetired; bool recArmed = false; int recSrc = -1, recLenIdx = 0, recStartIdx = 0; double recStartedAt = 0;
+  static constexpr double REC_STEPS[5] = { 0, 16, 32, 64, 128 };
+  void recArm() {
+    if (recArmed) return;
+    const double sr = core->eng->sr; RecBuf b; b.cap = (int64_t)(sr * SAMPLE_MAX_SECONDS);
+    try { b.L.reset(new float[(size_t)b.cap]); b.R.reset(new float[(size_t)b.cap]); } catch (const std::bad_alloc&) { toast("NOT ENOUGH MEMORY"); return; }
+    Cmd c; c.t = Cmd::REC; c.f1 = b.L.get(); c.f2 = b.R.get(); c.s = (int)b.cap; c.tr = (int8_t)recSrc; c.v = REC_STEPS[recLenIdx]; c.flag = recStartIdx == 1;
+    b.seq = b.armSeq = core->link.push(c); if (b.seq == UINT64_MAX) { toast("BUSY, TRY AGAIN"); return; }
+    recBuf = std::move(b); recArmed = true; recStartedAt = nowMs();
+    toast(recStartIdx == 1 ? "RECORDING" : playing ? "RECORDS FROM THE NEXT PATTERN START" : "RECORDS WHEN THE PATTERN STARTS: PRESS PLAY");
+  }
+  // waiting: cancelled; recording: stops here and keeps what was recorded (the engine reports DONE)
+  void recCancel() {
+    if (!recArmed) return;
+    Cmd c; c.t = Cmd::RECCANCEL; const uint64_t seq = core->link.push(c); if (seq != UINT64_MAX) recBuf.seq = seq;
+  }
+  void recPoll() {
+    // buffers the audio thread may still have written to are freed once it is past the cancel
+    const uint64_t done = core->link.consumed.load(std::memory_order_acquire);
+    recRetired.erase(std::remove_if(recRetired.begin(), recRetired.end(), [done](const RecBuf& b) { return b.seq < done; }), recRetired.end());
+    if (!recArmed || done <= recBuf.armSeq) return;   // the engine has not taken the buffers yet
+    const int st = core->eng->fb.recState.load(std::memory_order_acquire);
+    if (st == REC_ON || st == REC_WAIT) { needRepaint = true; return; }
+    if (st == REC_IDLE) { if (done > recBuf.seq) { recRetired.push_back(std::move(recBuf)); recBuf = RecBuf(); recArmed = false; toast("RESAMPLE CANCELLED"); } return; }
+    // done: build the sample (mono when both channels are the same), save it to the library and load it
+    const int64_t n = core->eng->fb.recN.load(); recArmed = false;
+    if (n < 2) { recBuf = RecBuf(); toast("NOTHING RECORDED"); return; }
+    std::shared_ptr<SampleData> sd(new SampleData()); sd->rate = core->eng->sr; sd->fmt = SF_F32;
+    bool same = true; for (int64_t i = 0; i < n && same; i++) if (recBuf.L[i] != recBuf.R[i]) same = false;
+    sd->ch = same ? 1 : 2; sd->d.assign(recBuf.L.get(), recBuf.L.get() + n); if (!same) sd->dR.assign(recBuf.R.get(), recBuf.R.get() + n);
+    recBuf = RecBuf();
+    const std::string dir = sndDir("Resampled"); const std::string what = recSrc < 0 ? std::string("Main") : "T" + std::to_string(recSrc + 1);
+    const std::string path = makeDir(dir) ? uniquePath(dir, "Resample " + what, ".wav") : std::string();
+    sd->name = path.empty() ? "Resample " + what : stemOf(fileName(path));
+    finishSample(*sd); SampleRef ref = core->cache.add(sd);
+    if (!path.empty()) { const std::vector<uint8_t> w = encodeWav(*ref); if (writeFileAtomic(path, w.data(), w.size())) markSelf(path); }
+    SoundDef d; wavSound(ref, d); d.name = ref->name;
+    if (!isMaster() && applySound(d, d.name)) toast("RESAMPLED " + upper(d.name) + " \xc2\xb7 ON TRACK " + std::to_string(tr + 1));
+    else toast("RESAMPLED: LIBRARY/SOUNDS/RESAMPLED");
+    scanLib(true);
+  }
+  void labSample(R c) {
+    const bool smpTr = !isMaster() && S().tracks[tr].m == M_SMP; const Step* hst = heldStepPtr();
+    const SampleData* sd = smpTr ? sampleOf(tr, hst) : nullptr;
+    h2(c.x, c.y + 12, "SAMPLE", isMaster() ? "select a track" : smpTr ? "track " + std::to_string(tr + 1) : "track " + std::to_string(tr + 1) + " is not a SAMPLE track");
+    // waveform with slice points; the slice the held step (or step 1) plays is lit
+    const R wv(c.x, c.y + 26, 600, 138);
+    if (D()) {
+      rrect(wv, 6, th.oledBg); rstroke(wv, 6, th.numEdge);
+      if (!sd || sd->len < 2) { font(fOled, 11); txt(wv.cx(), wv.cy(), smpTr ? "NO SAMPLE IN THIS SLOT" : "SAMPLE MACHINE: LAB > SOUND > ENGINE", th.oledMid, ALIGN_CENTER | ALIGN_BASELINE); }
+      else {
+        const float x0 = wv.x + 8, w = wv.w - 16, top = wv.y + 10, bot = wv.b() - 18, cy = (top + bot) / 2, amp = (bot - top) / 2 / std::max(0.05f, sd->peak);
+        const int slc = (int)clampd(jsround(getVal(51)), 0, 5), sel = (int)clampd(jsround(getVal(52)), 0, 64);
+        const auto hs = heldSteps(); const int step = hs.empty() ? 0 : hs[0];
+        if (slc > 0) { double lo, hi; MSmp::sliceRange(*sd, slc, sel, step, lo, hi); beginPath(); rect(x0 + (float)(lo / sd->len) * w, top - 4, std::max(1.f, (float)((hi - lo) / sd->len) * w), bot - top + 8); fillColor(A(th.oled, .14f)); fill(); }
+        beginPath();
+        for (int x = 0; x < (int)w; x++) {
+          const int k0 = (int)((double)x / w * OVERVIEW_N), k1 = std::max(k0 + 1, (int)((double)(x + 1) / w * OVERVIEW_N)); float mn = 0, mxv = 0;
+          for (int k = k0; k < k1 && k < OVERVIEW_N; k++) { mn = std::min(mn, sd->ov[k * 2]); mxv = std::max(mxv, sd->ov[k * 2 + 1]); }
+          rect(x0 + x, cy - mxv * amp, 0.9f, std::max(1.f, (mxv - mn) * amp));
+        }
+        fillColor(th.oled); fill();
+        // slice boundaries: the points (AUTO) or the equal grid
+        std::vector<double> b;
+        if (slc == 5 && !sd->slices.empty()) for (int x : sd->slices) b.push_back(x);
+        else if (slc > 0) { const int ns = slc == 5 ? 16 : (8 << (slc - 1)); for (int k = 0; k < ns; k++) b.push_back(std::floor((double)k * sd->len / ns)); }
+        else for (int x : sd->slices) b.push_back(x);
+        font(fOled, 8);
+        for (size_t k = 0; k < b.size(); k++) { const float bx = x0 + (float)(b[k] / sd->len) * w; beginPath(); rect(bx, top - 4, 1, bot - top + 8); fillColor(slc > 0 ? th.oledMid : th.oledDim); fill(); if (slc > 0 && (b.size() <= 32 || k % 2 == 0)) txt(bx + 2, top + 2, std::to_string(k + 1), th.oledMid); }
+        char ib[160]; std::snprintf(ib, sizeof ib, "S%02d %s \xc2\xb7 %s \xc2\xb7 %.1fKHZ \xc2\xb7 %.2fS \xc2\xb7 %d SLICE POINTS", slotOf(tr, hst) + 1, upper(sd->name).c_str(), sd->stereo() ? "STEREO" : "MONO", sd->rate / 1000, sd->seconds(), (int)sd->slices.size());
+        font(fOled, 9); txt(wv.x + 8, wv.b() - 5, fit(ib, wv.w - 16), th.oledMid);
+      }
+    }
+    // slicing
+    if (D()) { font(fPrint, 11, 1.5f); txt(c.x, c.y + 186, "SLICES", th.print); }
+    { static const char* const SL[6] = { "OFF", "8", "16", "32", "64", "AUTO" }; float x = c.x + 70;
+      for (int k = 0; k < 6; k++) { const float w = chipW(SL[k], true); if (chip(ID_SMPTAB + k, R(x, c.y + 172, w, 20), SL[k], smpTr && (int)jsround(getVal(51)) == k, true, !smpTr)) {
+          setVal(51, k, false); }
+        x += w + 5; } }
+    slider(ID_SMPTAB + 10, R(c.x, c.y + 202, 330, 22), "SENSITIVITY", sliceSens, 0, 100);
+    if (btn(ID_SMPTAB + 11, R(c.x + 344, c.y + 198, 120, 28), "DETECT")) { saveUiState(); detectNow(); }
+    if (btn(ID_SMPTAB + 12, R(c.x + 472, c.y + 198, 128, 28), "CLEAR POINTS")) setSlicePoints({}, "SLICE POINTS CLEARED");
+    para(c.x, c.y + 236, 600, "Step n plays slice n (SLCE = STEP); lock SLCE on a step (STEP page) to play another one, or set it for the whole track. STRT, END, MODE and LOOP work inside the slice, so REV plays a slice backwards. AUTO uses the slice points: DETECT finds the hits, WAV cue points are read and written.", th.print, 11.5f);
+    // ---- resample
+    const float rx = c.x + 630, rw = c.r() - rx;
+    if (D()) { beginPath(); rect(rx - 16, c.y + 4, 1, c.h - 8); fillColor(th.modEdge); fill(); }
+    h2(rx, c.y + 12, "RESAMPLE", "into a new sample");
+    const bool busy = recArmed;
+    if (D()) { font(fPrint, 11, 1.5f); txt(rx, c.y + 44, "SOURCE", th.print); txt(rx, c.y + 98, "LENGTH", th.print); txt(rx, c.y + 128, "START", th.print); }
+    { float x = rx + 70; for (int k = -1; k < NT; k++) { const std::string l = k < 0 ? "MAIN" : "T" + std::to_string(k + 1); const float w = k < 0 ? 52 : 30; const float yy = k < 4 ? c.y + 30 : c.y + 56; if (k == 4) x = rx + 70 + 57;
+        if (chip(ID_SMPTAB + 20 + (k + 1), R(x, yy, w, 20), l, recSrc == k, true, busy)) recSrc = k; x += w + 5; } }
+    { static const char* const LL[5] = { "PATTERN", "1 BAR", "2", "4", "8 BARS" }; float x = rx + 70;
+      for (int k = 0; k < 5; k++) { const float w = chipW(LL[k], true); if (chip(ID_SMPTAB + 30 + k, R(x, c.y + 84, w, 20), LL[k], recLenIdx == k, true, busy)) recLenIdx = k; x += w + 4; } }
+    { static const char* const SS[2] = { "NEXT PATTERN", "NOW" }; float x = rx + 70;
+      for (int k = 0; k < 2; k++) { const float w = chipW(SS[k], true); if (chip(ID_SMPTAB + 36 + k, R(x, c.y + 114, w, 20), SS[k], recStartIdx == k, true, busy)) recStartIdx = k; x += w + 5; } }
+    std::string bl = "RECORD";
+    if (busy) { const int st = core->eng->fb.recState.load(); const int64_t n = core->eng->fb.recN.load(), L = std::max<int64_t>(1, core->eng->fb.recLen.load());
+      bl = st == REC_ON ? "RECORDING " + std::to_string((int)(100 * n / L)) + "% \xc2\xb7 STOP" : "WAITING \xc2\xb7 CANCEL"; }
+    if (btn(ID_SMPTAB + 40, R(rx, c.y + 146, rw, 32), bl, !busy)) { if (busy) recCancel(); else recArm(); }
+    para(rx, c.y + 188, rw, "MAIN records the output, T1-T8 one track (after pan and volume, before the FX). The result is saved to Library/Sounds/Resampled and loaded onto the selected track (a free slot), mono if both sides are the same. Up to 60 s.", th.print, 11.5f);
+  }
+
+  // ================= LAB > SONG =================
+  int songScroll = 0, songSel = 0;
+  void songEdited() { core->sendArr(); needRepaint = true; }
+  double songBars() const { double st = 0; for (int r = 0; r < core->S->song.n; r++) st += core->S->patterns[core->S->song.rows[r].pat].mlen * core->S->song.rows[r].reps; return st / 16; }
+  void labSong(R c) {
+    Arrangement& G = S().song; songSel = (int)clampd(songSel, 0, std::max(0, G.n - 1));
+    char hb[96]; std::snprintf(hb, sizeof hb, "%d rows \xc2\xb7 %.1f bars%s", G.n, songBars(), S().seq == ARR_SONG ? " \xc2\xb7 plays (SNG)" : " \xc2\xb7 select SNG to play it");
+    h2(c.x, c.y + 12, "SONG", hb);
+    const int ar = playing && S().seq == ARR_SONG ? core->eng->fb.arrRow.load() : -1, arep = core->eng->fb.arrRep.load();
+    if (D()) { font(fPrint, 9.5f, 1.2f); const float y = c.y + 36; txt(c.x, y, "ROW", th.print); txt(c.x + 40, y, "PATTERN", th.print); txt(c.x + 258, y, "REPEAT", th.print); txt(c.x + 346, y, "MUTE TRACKS", th.print); txt(c.x + 520, y, "TEMPO", th.print); }
+    const int vis = 10; const R lr(c.x, c.y + 44, 600, vis * 26);
+    const int maxScroll = std::max(0, G.n - vis);
+    if (scrolled(lr)) songScroll = (int)clampd(songScroll + (wheel > 0 ? -1 : 1), 0, maxScroll);
+    songScroll = std::min(songScroll, maxScroll);
+    int del = -1;
+    for (int r = songScroll; r < G.n && r < songScroll + vis; r++) {
+      ArrRow& w = G.rows[r]; const float y = lr.y + (r - songScroll) * 26; const int vk = r - songScroll, id = ID_SONG + vk * 40;
+      if (D() && r == ar) { rrect(R(c.x - 4, y - 2, 604, 24), 5, A(th.led, .10f)); }
+      char nb[16]; std::snprintf(nb, sizeof nb, "%02d", r + 1);
+      if (chip(id, R(c.x, y, 30, 20), nb, r == songSel, true)) { songSel = r; if (G.start != r) { G.start = r; songEdited(); } }
+      for (int p = 0; p < NPAT; p++) if (chip(id + 1 + p, R(c.x + 40 + p * 26, y, 24, 20), std::to_string(p + 1), w.pat == p, true)) { if (w.pat != p) { pushUndo(); w.pat = (int8_t)p; songEdited(); } songSel = r; }
+      if (chip(id + 10, R(c.x + 258, y, 20, 20), "\xe2\x88\x92", false, true, w.reps <= 1)) { pushUndo(); w.reps--; songEdited(); }
+      if (D()) { font(fNum, 11); std::string rs = (r == ar ? std::to_string(arep + 1) + "/" : std::string("\xc3\x97")) + std::to_string(w.reps); txt(c.x + 302, y + 14, rs, r == ar ? th.led : th.printHi, ALIGN_CENTER | ALIGN_BASELINE); }
+      if (chip(id + 11, R(c.x + 318, y, 20, 20), "+", false, true, w.reps >= 99)) { pushUndo(); w.reps++; songEdited(); }
+      for (int t = 0; t < NT; t++) { const bool m = (w.mute >> t) & 1; if (chip(id + 12 + t, R(c.x + 346 + t * 21, y, 19, 20), std::to_string(t + 1), m, true)) { pushUndo(); w.mute ^= (uint8_t)(1 << t); songEdited(); } }
+      { char bb[16]; if (w.bpm > 0) std::snprintf(bb, sizeof bb, "%.1f", w.bpm); else std::snprintf(bb, sizeof bb, "PTN");
+        const R br(c.x + 520, y, 50, 20);
+        if (chip(id + 21, br, bb, w.bpm > 0, true)) { pushUndo(); w.bpm = w.bpm > 0 ? 0 : (float)S().patterns[w.pat].bpm; songEdited(); }
+        if (scrolled(br) && w.bpm > 0) { w.bpm = (float)clampd(jsround((w.bpm + (wheel > 0 ? 1 : -1) * ((mods & kModifierShift) ? 0.1 : 1)) * 10) / 10, 40, 300); songEdited(); } }
+      if (chip(id + 22, R(c.x + 578, y, 20, 20), "\xc3\x97", false, true)) del = r;
+    }
+    if (del >= 0) { pushUndo(); for (int r = del; r + 1 < G.n; r++) G.rows[r] = G.rows[r + 1]; G.n--; if (G.start >= G.n) G.start = std::max(0, G.n - 1); songEdited(); }
+    if (G.n == 0 && D()) para(c.x, lr.y + 6, 590, "No rows yet. + ROW adds the current pattern. Each row plays its pattern the number of times shown, can mute tracks and set its own tempo (PTN = the pattern's tempo). Select SNG next to the pattern keys and press PLAY; in Live the song follows the arrangement position.", th.print, 12);
+    if (D() && maxScroll > 0) { const float th_ = lr.h * vis / (vis + maxScroll); rrect(R(lr.r() + 4, lr.y, 3, lr.h), 1.5f, th.range); rrect(R(lr.r() + 4, lr.y + (lr.h - th_) * songScroll / maxScroll, 3, th_), 1.5f, th.print); }
+    // ---- right column
+    const float rx = c.x + 640, rw = c.r() - rx;
+    auto ins = [&](int at, const ArrRow& w) { if (G.n >= NROW) { toast("SONG IS FULL (128 ROWS)"); return; } pushUndo(); for (int r = G.n; r > at; r--) G.rows[r] = G.rows[r - 1]; G.rows[at] = w; G.n++; songSel = at; if (songSel >= songScroll + vis) songScroll = songSel - vis + 1; songEdited(); };
+    if (btn(ID_SONGBTN, R(rx, c.y + 30, 150, 28), "+ ROW (P" + std::to_string(S().cur + 1) + ")", true)) { ArrRow w; w.pat = (int8_t)S().cur; ins(G.n, w); }
+    if (btn(ID_SONGBTN + 1, R(rx + 158, c.y + 30, 150, 28), "DUPLICATE ROW") && G.n) ins(songSel + 1, G.rows[songSel]);
+    if (btn(ID_SONGBTN + 2, R(rx, c.y + 64, 100, 28), "MOVE UP") && songSel > 0) { pushUndo(); std::swap(G.rows[songSel], G.rows[songSel - 1]); songSel--; songEdited(); }
+    if (btn(ID_SONGBTN + 3, R(rx + 104, c.y + 64, 100, 28), "MOVE DOWN") && songSel + 1 < G.n) { pushUndo(); std::swap(G.rows[songSel], G.rows[songSel + 1]); songSel++; songEdited(); }
+    if (btn(ID_SONGBTN + 4, R(rx + 208, c.y + 64, 100, 28), "CLEAR") && G.n && confirm("clearsong")) { pushUndo(); G.n = 0; G.start = 0; songEdited(); toast("SONG CLEARED"); }
+    if (btn(ID_SONGBTN + 5, R(rx, c.y + 98, 150, 28), "CHAIN TO SONG") ) {
+      if (S().chain.empty()) toast("NO CHAIN"); else { pushUndo(); for (int8_t p : S().chain) { if (G.n >= NROW) break; ArrRow w; w.pat = p; if (G.n && G.rows[G.n - 1].pat == p && G.rows[G.n - 1].reps < 99 && !G.rows[G.n - 1].mute && G.rows[G.n - 1].bpm == 0) G.rows[G.n - 1].reps++; else G.rows[G.n++] = w; } songEdited(); toast("CHAIN COPIED INTO THE SONG"); } }
+    if (D()) { font(fPrint, 11, 1.5f); txt(rx, c.y + 150, "AT THE END", th.print); }
+    { float x = rx + 96; for (int k = 0; k < 2; k++) { const char* l = k ? "STOP" : "LOOP"; const float w = chipW(l, true); if (chip(ID_SONGBTN + 6 + k, R(x, c.y + 136, w, 20), l, G.loop == (k == 0), true)) { pushUndo(); G.loop = k == 0; songEdited(); } x += w + 5; } }
+    if (D()) { font(fPrint, 11, 1.5f); txt(rx, c.y + 180, "PLAY FROM", th.print); font(fNum, 12); txt(rx + 96, c.y + 180, G.n ? "ROW " + std::to_string(G.start + 1) : "\xe2\x80\x94", th.printHi); }
+    para(rx, c.y + 196, rw, "Click a row number to play from there. A pattern key pressed while the song plays takes one loop, then the song goes on. Live: the song follows Live's position (bar 1 = row 1); with STOP it is silent after the last row.", th.print, 11.5f);
+  }
+
   void labPerform(R c) {
     h2(c.x, c.y + 12, "PERFORM", "perf pads");
     para(c.x, c.y + 26, c.w, "Press PERF on the face: pads 1\xe2\x80\x93" "4 roll retrigs while held, 5\xe2\x80\x93" "8 play velocities, 9\xe2\x80\x93" "12 and 13\xe2\x80\x93" "16 lock the two parameters below. With REC on and the pattern running, pad hits are written as trigs with those values.", th.print, 12.5f);
@@ -2114,13 +2415,16 @@ protected:
         "(turn a knob while holding to lock) \xc2\xb7 Z X C V B N M , = track pads \xc2\xb7 Shift = FUNC \xc2\xb7 A = Control All \xc2\xb7 F = fill \xc2\xb7 arrows = page / track \xc2\xb7 "
         "Esc = release held steps \xc2\xb7 L = LAB \xc2\xb7 Ctrl+Z = undo. Default MIDI: C1\xe2\x80\x93G1 tracks, C0\xe2\x80\x93G0 patterns.", th.print, 12.5f);
     } else {
-      h2(rx, c.y + 12, "IN LIVE");
-      para(rx, c.y + 28, c.w - 430,
+      h2(rx, c.y + 12, "OUTPUTS", "track on its own output pair in Live");
+      { float x = rx; for (int t = 0; t < NT; t++) { const std::string l = "T" + std::to_string(t + 1); if (chip(ID_OUTS + t, R(x, c.y + 24, 40, 22), l, S().outs[t] != 0, true)) { pushUndo(); S().outs[t] = S().outs[t] ? 0 : 1; core->sendOuts(); toast(S().outs[t] ? "TRACK " + std::to_string(t + 1) + " ON ITS OWN OUTPUT" : "TRACK " + std::to_string(t + 1) + " IN THE MAIN MIX"); } x += 45; } }
+      para(rx, c.y + 52, c.w - 430, "A lit track leaves the main mix and plays on its own output (Track n) once Live uses it: in a Live audio track, Audio From = HARDER, then Track n. Its delay / reverb sends still go to the FX on the main output; it skips the master glue, drive and limiter.", th.print, 11.5f);
+      h2(rx, c.y + 124, "IN LIVE");
+      para(rx, c.y + 140, c.w - 430,
         "Transport: the sequencer follows Live's play, tempo and position (bar-accurate, also when Live loops or jumps). "
         "With Live stopped, PLAY runs the internal clock at the pattern tempo.\n"
         "MIDI in: C1\xe2\x80\x93G1 (36\xe2\x80\x93" "43) trigger tracks 1\xe2\x80\x93" "8 with velocity. C0\xe2\x80\x93G0 (24\xe2\x80\x93" "31) cue patterns P1\xe2\x80\x93P8 for the next pattern end.\n"
         "Automation: each track exposes Src 1\xe2\x80\x93" "8 and its main filter, amp and send controls; the master FX, mutes, fill and pattern select are automatable too. "
-        "Parameter locks stay inside the patterns. Export renders at Live's tempo when Live is playing.", th.print, 12.5f);
+        "Parameter locks stay inside the patterns. Export renders at Live's tempo when Live is playing.", th.print, 11.5f);
     }
   }
   // a full-width selectable row (device names are long and mixed case)
@@ -2165,13 +2469,30 @@ protected:
       font(fPrint, 12, 0.3f); txt(c.x, sy + 76, b, open ? th.printHi : th.rec);
       if (!audioMsg.empty()) { font(fPrint, 11, 1.2f); txt(c.x, sy + 94, audioMsg, th.rec); }
     }
-    // MIDI inputs
-    const float rx = c.x + 470;
+    // MIDI in / out and clock
+    const float rx = c.x + 470, rw = c.w - 470;
     h2(rx, c.y + 12, "MIDI INPUT", "C1\xe2\x80\x93G1 tracks \xc2\xb7 C0\xe2\x80\x93G0 patterns");
-    if (midiNames.empty()) para(rx, c.y + 32, c.w - 470, "No MIDI input found. Connect a controller and press RESCAN.", th.print, 12);
-    for (size_t k = 0; k < midiNames.size() && k < 8; k++) { bool on = midiOpen[k]; if (check(ID_MIDI + (int)k, R(rx, c.y + 30 + k * 26, c.w - 470, 24), midiNames[k], on)) toggleMidi(k); }
-    if (btn(ID_RESCAN, R(rx, c.y + 252, 150, 30), "RESCAN")) { refreshAudioLists(); toast("DEVICES RESCANNED"); }
-    para(rx + 162, c.y + 250, c.w - 470 - 162, "Windows lets one program at a time use a MIDI input: untick it here to use it in another program.", th.print, 11);
+    if (midiNames.empty() && D()) { font(fPrint, 12, 0.3f); txt(rx, c.y + 42, "No MIDI input found.", th.print); }
+    for (size_t k = 0; k < midiNames.size() && k < 4; k++) { bool on = midiOpen[k]; if (check(ID_MIDI + (int)k, R(rx, c.y + 30 + k * 23, rw, 22), midiNames[k], on)) toggleMidi(k); }
+    h2(rx, c.y + 136, "MIDI OUTPUT", "MIDI clock");
+    if (midiOutNames.empty() && D()) { font(fPrint, 12, 0.3f); txt(rx, c.y + 166, "No MIDI output found.", th.print); }
+    for (size_t k = 0; k < midiOutNames.size() && k < 3; k++) { bool on = midiOutOpen[k]; if (check(ID_MIDIOUT + (int)k, R(rx, c.y + 154 + k * 23, rw, 22), midiOutNames[k], on)) toggleMidiOut(k); }
+    { bool a = core->clockIn.load(); if (check(ID_CLOCK, R(rx, c.y + 230, 210, 22), "Follow MIDI clock in", a)) { core->clockIn.store(a); saveSettings(); toast(a ? "FOLLOWS MIDI CLOCK (START / STOP / POSITION)" : "INTERNAL CLOCK"); } }
+    { bool a = core->clockOut.load(); if (check(ID_CLOCK + 1, R(rx + 220, c.y + 230, 190, 22), "Send MIDI clock", a)) { core->clockOut.store(a); saveSettings(); toast(a ? "SENDS CLOCK TO THE TICKED OUTPUTS" : "CLOCK OUT OFF"); } }
+    if (D()) {
+      char b[160]; const double eb = core->extBpm.load();
+      if (core->clockIn.load()) std::snprintf(b, sizeof b, "CLOCK IN: %s", eb > 0 ? (toFixed(eb, 1) + " BPM" + (core->extClock.load() ? " \xc2\xb7 RUNNING" : " \xc2\xb7 STOPPED")).c_str() : "NO CLOCK");
+      else std::snprintf(b, sizeof b, "CLOCK OUT OFFSET");
+      font(fPrint, 10.5f, 1.0f); txt(rx, c.y + 271, b, th.print);
+    }
+    if (!core->clockIn.load()) {
+      const int off = core->clockOffsetMs.load();
+      if (chip(ID_CLOCK + 2, R(rx + 130, c.y + 258, 22, 20), "\xe2\x88\x92", false, true, off <= -50)) { core->clockOffsetMs.store(off - 1); saveSettings(); }
+      if (D()) { font(fNum, 11); txt(rx + 186, c.y + 272, (off > 0 ? "+" : "") + std::to_string(off) + " MS", th.printHi, ALIGN_CENTER | ALIGN_BASELINE); }
+      if (chip(ID_CLOCK + 3, R(rx + 220, c.y + 258, 22, 20), "+", false, true, off >= 100)) { core->clockOffsetMs.store(off + 1); saveSettings(); }
+    }
+    if (btn(ID_RESCAN, R(rx, c.y + 290, 120, 28), "RESCAN")) { refreshAudioLists(); toast("DEVICES RESCANNED"); }
+    para(rx + 130, c.y + 288, rw - 130, "Windows lets one program at a time use a MIDI port: untick it here to use it elsewhere. Offset: later (+) if the other device runs ahead.", th.print, 10.5f);
   }
 
   // ================= DPF events =================

@@ -14,9 +14,9 @@ include ../../dpf/Makefile.plugins.mk
 # so the DSP is built with IEEE semantics, exactly like the reference renders.
 BASE_OPTS = -O3 -fno-math-errno -ffp-contract=off -fdata-sections -ffunction-sections -mtune=generic -msse -msse2 -mfpmath=sse
 BUILD_C_FLAGS += -std=gnu99 -Ihmath -Ihmath/src -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough -Wno-missing-field-initializers -Wno-unused-but-set-variable
-BUILD_CXX_FLAGS += -std=gnu++17 -DDPF_PARAM_TEXT_HOOK -DDPF_VST3_NO_MIDI_CC_PARAMS -DDPF_PARAM_REFUSAL -DDPF_NATIVE_AUDIO_SETTINGS -DDPF_RTAUDIO_WASAPI_NO_MF -DDPF_RTAUDIO_WASAPI_JOIN_THREAD -DDPF_WIN_SAVE_DEFAULT_NAME -Wno-misleading-indentation -fno-math-errno -Wframe-larger-than=32768
+BUILD_CXX_FLAGS += -std=gnu++17 -DDPF_PARAM_TEXT_HOOK -DDPF_VST3_NO_MIDI_CC_PARAMS -DDPF_PARAM_REFUSAL -DDPF_NATIVE_AUDIO_SETTINGS -DDPF_RTAUDIO_WASAPI_NO_MF -DDPF_RTAUDIO_WASAPI_JOIN_THREAD -DDPF_WIN_SAVE_DEFAULT_NAME -DDPF_VST3_AUX_OUTPUT_GROUPS -Wno-misleading-indentation -fno-math-errno -Wframe-larger-than=32768
 ifeq ($(WINDOWS),true)
-LINK_FLAGS += -static -static-libgcc -static-libstdc++ -lshell32
+LINK_FLAGS += -static -static-libgcc -static-libstdc++ -lshell32 -lwinmm
 # app icon (resource 1, see WINDOWS_ICON_ID=1 in scripts/build.sh); DGL sets it on the window
 WINDRES ?= x86_64-w64-mingw32-windres
 LINK_FLAGS += $(RES_O)

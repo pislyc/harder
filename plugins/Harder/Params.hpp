@@ -77,7 +77,7 @@ enum FmtId {
   FM_FMK_RATI, FM_SNR_SPRD, FM_CLP_CNT, FM_MTL_SPRD, FM_MDL_MATR, FM_ZAP_SWEP, FM_ZAP_RATI, FM_GLT_SWEP, FM_DUO_RATI, FM_DUO_WAVE,
   FM_TYPE, FM_T0, FM_DECINF, FM_PAN, FM_BITS, FM_SRR, FM_CTUN, FM_LFOSPD, FM_DEG, FM_PCTRAW, FM_MICR, FM_RLEN,
   FM_DJF, FM_SHAP, FM_XOVR, FM_PREMS,
-  FM_SEMIB, FM_CENT, FM_SLOT, FM_PCT1,
+  FM_SEMIB, FM_CENT, FM_SLOT, FM_PCT1, FM_SLCE,
 };
 
 struct PDef {
@@ -101,6 +101,7 @@ inline PDef PL(const char* n, double mn, double mx, double df, const char* const
 struct Tables {
   PDef mach[NMACH][8];
   PDef common[NP];
+  PDef smpx[NP];   // SAMPLE machine only: slots that are free for the other machines (STEP page 51, 52: slices)
   PDef master[NM];
   Tables() {
     PDef (&m)[NMACH][8] = mach;
@@ -146,6 +147,8 @@ struct Tables {
     m[M_SMP][0] = P("TUNE", -24, 24, 0, FM_SEMIB); m[M_SMP][1] = P("FINE", -64, 63, 0, FM_CENT); m[M_SMP][2] = P("SMP", 0, 63, 0, FM_SLOT);
     m[M_SMP][3] = P("STRT", 0, 127, 0, FM_PCT1); m[M_SMP][4] = P("END", 0, 127, 127, FM_PCT1); m[M_SMP][5] = PL("MODE", 0, 3, 0, SMODE, 4);
     m[M_SMP][6] = P("LOOP", 0, 127, 0, FM_PCT1); m[M_SMP][7] = P("LEV", 0, 127, 100, FM_RAW);
+    static const char* const SLCS[] = { "OFF", "8", "16", "32", "64", "AUTO" };
+    smpx[51] = PL("SLCS", 0, 5, 0, SLCS, 6); smpx[52] = P("SLCE", 0, 64, 0, FM_SLCE);
 
     PDef* c = common;
     static const char* const CHOK[] = { "OFF", "A", "B", "C", "D" };
@@ -182,7 +185,7 @@ struct Tables {
     M[30] = P("DDLY", 0, 127, 0, FM_PCT); M[31] = P("DREV", 0, 127, 0, FM_PCT);
   }
   // trackDefs(mid)[i]
-  const PDef& track(int mid, int i) const { return i < 8 ? mach[mid < 0 ? 0 : mid][i] : common[i]; }
+  const PDef& track(int mid, int i) const { return i < 8 ? mach[mid < 0 ? 0 : mid][i] : (mid == M_SMP && smpx[i].valid()) ? smpx[i] : common[i]; }
 };
 
 inline const Tables& T() { static Tables t; return t; }
@@ -255,6 +258,7 @@ inline std::string formatValue(const PDef& d, double v) {
     case FM_CENT: { const int c = (int)jsround(v / 64 * 100); return (c > 0 ? "+" : "") + std::to_string(c) + "c"; }
     case FM_SLOT: { char b[16]; std::snprintf(b, sizeof b, "S%02d", (int)jsround(v) + 1); return b; }
     case FM_PCT1: return toFixed(v / 127 * 100, 1) + "%";
+    case FM_SLCE: { const int k = (int)jsround(v); return k <= 0 ? "STEP" : "#" + std::to_string(k); }
   }
   return istr(v);
 }
