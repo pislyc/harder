@@ -88,6 +88,7 @@ inline void scanLibrary(const std::string& root, bool sounds, LibIndex& out) {
       else if (sounds && ext == ".wav") { if (jsonStems.count(lowerAscii(stemOf(e.name)))) continue; kind = LK_WAV; }
       else continue;
       LibItem it; it.name = stemOf(e.name); it.path = joinPath(dir, e.name); it.cat = cat; it.kind = kind; it.mtime = e.mtime; it.size = e.size;
+      if (kind == LK_SOUND) for (const DirEnt& w : ents) if (!w.dir && extOf(w.name) == ".wav" && lowerAscii(stemOf(w.name)) == lowerAscii(it.name)) { it.mtime = std::max(it.mtime, w.mtime); it.size += w.size; }   // the sound's own WAV counts (a re-rendered sample is a change)
       out.items.push_back(it);
     }
   };
@@ -106,10 +107,21 @@ inline void scanLibrary(const std::string& root, bool sounds, LibIndex& out) {
 // ---------- sounds ----------
 struct SoundDef { std::string name; int m = M_SUB; double p[NP]; SampleRef smp; };
 
+// reads only what is used: the header and at most 60 s of audio (a long recording is not loaded whole)
 inline bool loadWavFile(const std::string& path, SampleRef& out, std::string& err, bool* truncated = nullptr) {
-  std::string data; if (!readTextFile(path, data)) { err = "could not read the file"; return false; }
-  out = decodeWav(stemOf(fileName(path)), (const uint8_t*)data.data(), data.size(), &err, truncated);
-  return out != nullptr;
+  try {
+    std::string data; uint64_t total = 0; bool cut = false;
+    if (!readFilePrefix(path, 4u << 20, data, &total)) { err = "could not read the file"; return false; }
+    if (total > data.size()) {
+      uint64_t need = wavBytesNeeded((const uint8_t*)data.data(), data.size(), &cut);
+      if (!need) need = total <= (1ull << 30) ? total : 0;   // the audio starts after 4 MB of other chunks: read it all, up to 1 GB
+      if (!need) { err = "file too large"; return false; }
+      if (need > data.size() && !readFilePrefix(path, need, data, &total)) { err = "could not read the file"; return false; }
+    }
+    out = decodeWav(stemOf(fileName(path)), (const uint8_t*)data.data(), data.size(), &err, truncated);
+    if (out && truncated && cut) *truncated = true;
+    return out != nullptr;
+  } catch (const std::bad_alloc&) { err = "not enough memory for this file"; out.reset(); return false; }
 }
 inline void wavSound(const SampleRef& s, SoundDef& d) { d.name = s->name; d.m = M_SMP; defaultTrackParams(M_SMP, d.p); d.smp = s; }
 

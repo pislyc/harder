@@ -1,6 +1,27 @@
-# HARDER — verification report (1.3.0: standalone program + VST3 plugin)
+# HARDER — verification report (1.3.1: standalone program + VST3 plugin)
 
 All numbers below were measured in the build environment (Linux x86-64 VM, 2 cores; Windows binaries run under Wine 9).
+
+## E. Fixed in 1.3.1
+
+Found in an audit of 1.3.0 (each one reproduced before it was fixed) and checked again after the fix.
+
+| bug | before (1.3.0) | check after the fix (1.3.1) |
+|---|---|---|
+| B1: renaming or moving a category folder auto-loaded one of its sounds onto the selected track (the watcher knew files by path) | Windows exe under Wine, Auto-load on: `Kicks` and `打击乐 Perc` renamed from outside -> track 1 replaced by "镲片 Hat 01" | same steps: tracks unchanged (autosave compared before / after / renamed back). Still loads: a new WAV in INBOX, a WAV re-rendered in place with another length, the sound's own WAV re-rendered (a sound file is now known by its name, size and time, its WAV included) |
+| B2: the session sample cache only grew (every sample ever loaded stayed in memory) | VST3 host test section 7 (5 host states, each with 4 new 60 s float samples = 46 MB, then a state without samples): +220 MB kept, Linux and Windows DLL | +35 MB kept on both (the last state's samples until the audio thread has let go of them; freed at the next change). In the standalone the samples referred to by the 60 undo steps stay, the rest is released every 5 s. `sample_test` K: pinned / in-use / unused entries |
+| B3: undefined behaviour on out-of-range numbers in files (float -> int casts of e.g. `1e308` in kit, lengths, locks, master) | `fuzz_parsers` built with `-fsanitize=float-cast-overflow`: runtime errors at 4 sites | 30 000 mutated inputs (projects with samples, sounds, grooves, control.json, WAV): 0 runtime errors, no crash; `control_test` 61 809 checks under ASan/UBSan |
+| B4: export turned non-ASCII track / sound names into `_` | `底鼓` -> `__` in the zip | names keep their UTF-8 letters, zip entries with such names carry the UTF-8 flag (bit 11); ASCII names unchanged: the 20 export zips of the 10 test projects are byte-identical to 1.3.0, and the comparison with the web app is unchanged (0 failures, 201 of 39.9 M samples 1 LSB) |
+| B5: a WAV was read into memory whole before the 60 s cut (a 2 GB file = 2 GB allocated) | — | only the header and at most 60 s of audio are read; "cut" is reported only when the audio really is longer (a 50 s file followed by a 1 MB chunk is not "cut"; audio after 5 MB of other chunks is found); out of memory is reported instead of ending the program. `sample_test` K, native (ASan/UBSan) and Windows build under Wine: 149 checks pass |
+| P1: autosave built and wrote the whole project (with base64 samples) on the UI thread every 2 s after a change | 16 x 20 s float samples: 238 ms of UI time per save (compare, build and write 78 MB) | the UI thread compares without sample data and copies the project (1.3 ms for the same project, mean of 5; samples are shared, not copied); a worker thread builds and writes it (237 ms). On exit the program waits for a running write and saves the last state itself: a sound auto-loaded 1.6 s before closing (`taskkill` = WM_CLOSE) was in the autosave after the exit |
+
+Unchanged by these fixes (rerun on the 1.3.1 binaries): engine equivalence with the web app, 36 scenarios at 44.1 / 48 / 96 kHz
+(max 5.96e-8); generator 1001 objects / 694 715 values, 0 mismatches; presets through the UI path 0/111; host echo 0/111;
+preview 0/222; sync drift <= 1 sample; `core_test` (web round trip, 0 heap allocations on the audio thread); VST3 host
+test on Linux and on the Windows DLL under Wine: PASSED; pluginval strictness 10 on both: SUCCESS.
+
+Seen while testing, not changed: two WAV files with exactly the same audio are one sample (samples are known by their
+content), so the second one shows the first one's sample name on the SAMPLE page; the track shows the right sound name.
 
 ## D. New in 1.3.0: LAB > CONTROL (standalone keyboard and MIDI-controller mapping)
 
@@ -209,7 +230,7 @@ Host sync: 60 s of tempo automation between 80 and 160 BPM with loop jumps: the 
 0.37 beats after it, with a 13-step polymeter track and tracks at 1/4x and 3/2x speed: the trigs (track, time,
 velocity, conditional trigs included) are the same as when the song plays through from the start, within 1 sample.
 
-## 3. Plugin validation (1.2.0 binaries)
+## 3. Plugin validation (1.3.1 binaries)
 
 - pluginval, strictness 10, Linux build, full suite including editor and fuzz tests: SUCCESS
 - pluginval, strictness 10, Windows build under Wine, editor tests skipped (under Wine the editor test times out for

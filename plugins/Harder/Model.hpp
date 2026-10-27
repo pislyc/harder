@@ -253,13 +253,13 @@ inline bool projectFromJson(const JVal& o, Project& p, SampleCache* cache = null
   if (!o.isObj() || o["v"].num(0) != 2 || !o["tracks"].isArr() || o["tracks"].size() != NT || !o["patterns"].isArr() || o["patterns"].size() != NPAT) return false;
   for (int t = 0; t < NT; t++) if (machineIndex(o["tracks"][t]["m"].str().c_str()) < 0) return false;
   std::unique_ptr<Project> q(new Project());
-  q->kit = (int)o["kit"].num(0);
+  q->kit = clampi(o["kit"].num(0), 0, 1000000, 0);
   for (int t = 0; t < NT; t++) {
     const JVal& x = o["tracks"][t]; const int mid = machineIndex(x["m"].str().c_str());
     q->tracks[t].m = mid; paramsFromJson(x["p"], mid, q->tracks[t].p); q->tracks[t].pre = x["pre"].isStr() ? x["pre"].str() : "";
   }
   for (int t = 0; t < NT; t++) { q->roles[t] = t; const int r = roleIndex(o["roles"][t].str().c_str()); if (o["roles"].isArr() && r >= 0) q->roles[t] = r; }
-  defaultMaster(q->master); for (int i = 0; i < NM; i++) { const JVal& v = o["master"][i]; if (v.isNum() && std::isfinite(v.n)) q->master[i] = v.n; }
+  defaultMaster(q->master); for (int i = 0; i < NM; i++) { const JVal& v = o["master"][i]; if (v.isNum() && std::isfinite(v.n)) q->master[i] = jsonParam(v.n); }
   for (int i = 0; i < NPAT; i++) patternFromJson(o["patterns"][i], q->patterns[i]);
   q->cur = clampi(o["cur"].num(0), 0, NPAT - 1, 0);
   for (int t = 0; t < NT; t++) q->mutes[t] = o["mutes"][t].truthy() ? 1 : 0;

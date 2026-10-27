@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdio>
 #include <string>
+#include <set>
 
 namespace hd {
 
@@ -237,6 +238,14 @@ struct Core {
       engSmp[i] = S->smp[i];
     }
     gcSamples();
+  }
+  // the session cache keeps samples for undo snapshots (which refer to them by id); drop the ones nothing uses any more:
+  // not in the project, the engine, the retire list or an export (use_count 1 = only the cache) and not in `pinned`
+  std::set<std::string> pinned;   // ids in the UI's undo snapshots (main thread)
+  size_t pruneCache() {
+    size_t n = 0;
+    for (auto it = cache.m.begin(); it != cache.m.end();) { if (it->second.use_count() == 1 && !pinned.count(it->first)) { it = cache.m.erase(it); n++; } else ++it; }
+    return n;
   }
   void gcSamples() {
     const uint64_t done = link.consumed.load(std::memory_order_acquire);

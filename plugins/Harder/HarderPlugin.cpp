@@ -67,7 +67,7 @@ protected:
   const char* getMaker() const override { return "HARDER"; }
   const char* getHomePage() const override { return "https://github.com/pislyc/harder"; }
   const char* getLicense() const override { return "GPL-3.0-or-later"; }
-  uint32_t getVersion() const override { return d_version(1, 3, 0); }
+  uint32_t getVersion() const override { return d_version(1, 3, 1); }
 
   void initParameter(uint32_t index, Parameter& p) override {
     const HostParamInfo h = hostParamInfo((int)index);
@@ -108,6 +108,7 @@ protected:
     if (!projectFromString(value, *p, &core.cache)) return;   // keep the current project if the data is not a HARDER project
     std::lock_guard<std::recursive_mutex> g(core.mtx);
     *core.S = *p;
+    core.pruneCache();
     core.refreshHost(nullptr);
     core.sendAll();
     for (int i = 0; i < HP_COUNT; i++) if (i != HP_FILL) core.markDirty(i);

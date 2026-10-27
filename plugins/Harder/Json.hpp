@@ -99,6 +99,10 @@ struct JParser {
   }
 };
 
+// a number from a file as an int: range checked before the conversion (a cast of 1e308 is undefined behaviour)
+inline int jsonInt(double v, int lo, int hi, int def) { if (!std::isfinite(v)) return def; if (v < lo) return lo; if (v > hi) return hi; return (int)v; }
+// parameter and lock values: any finite value the web app keeps, but bounded so integer conversions stay defined
+inline double jsonParam(double v) { return v < -1e6 ? -1e6 : v > 1e6 ? 1e6 : v; }
 inline bool parseJson(const std::string& s, JVal& out) {
   JParser P(s.data(), s.size()); out = JVal(); if (!P.value(out)) return false; P.ws(); return P.p == P.end;
 }

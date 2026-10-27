@@ -2,6 +2,7 @@
 #include "FileSys.hpp"
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #ifdef _WIN32
 # ifndef NOMINMAX
 #  define NOMINMAX
@@ -45,6 +46,25 @@ bool readTextFile(const std::string& path, std::string& out) {
 #endif
   if (!f) return false;
   out.clear(); std::vector<char> buf(1 << 16); size_t n; while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) out.append(buf.data(), n);
+  std::fclose(f); return true;
+}
+bool readFilePrefix(const std::string& path, uint64_t maxBytes, std::string& out, uint64_t* total) {
+#ifdef _WIN32
+  FILE* f = openUtf8(path, L"rb");
+#else
+  FILE* f = openUtf8(path, "rb");
+#endif
+  if (!f) return false;
+#ifdef _WIN32
+  _fseeki64(f, 0, SEEK_END); const int64_t sz = _ftelli64(f); _fseeki64(f, 0, SEEK_SET);
+#else
+  fseeko(f, 0, SEEK_END); const int64_t sz = (int64_t)ftello(f); fseeko(f, 0, SEEK_SET);
+#endif
+  if (total) *total = sz > 0 ? (uint64_t)sz : 0;
+  const uint64_t want = sz > 0 && (uint64_t)sz < maxBytes ? (uint64_t)sz : maxBytes;
+  out.clear(); out.reserve((size_t)want);
+  std::vector<char> buf(1 << 16); uint64_t got = 0; size_t n;
+  while (got < want && (n = std::fread(buf.data(), 1, (size_t)std::min<uint64_t>(buf.size(), want - got), f)) > 0) { out.append(buf.data(), n); got += n; }
   std::fclose(f); return true;
 }
 bool writeFileAtomic(const std::string& path, const void* data, size_t size) {

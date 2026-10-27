@@ -158,7 +158,7 @@ class HarderUI : public UI {
   std::string sndSel, grvSel;                      // selected item path ("" = the category is selected)
   int sndScroll = 0, grvScroll = 0, sndCatScroll = 0, grvCatScroll = 0;
   bool autoLoad = false, autoArmed = false; double nextAutoScan = 0;
-  std::map<std::string, std::pair<uint64_t, int64_t>> watchKnown, watchPending; std::set<std::string> selfWritten;
+  std::set<std::string> watchKnown; std::map<std::string, std::string> watchPending; std::set<std::string> selfWritten;
   std::string confirmKey; double confirmUntil = 0;
   // drag and drop of a library item onto a category
   std::string dragPath; int dragLib = 0; bool dragMoved = false; float dragX = 0, dragY = 0, dragX0 = 0, dragY0 = 0; std::string dragLabel;
@@ -196,7 +196,9 @@ public:
 
   ~HarderUI() override {
     expCancel = true; if (expThread.joinable()) expThread.join();
-    if (standalone && core) { std::lock_guard<std::recursive_mutex> g(core->mtx); autosaveNow(); }
+    if (core) { std::lock_guard<std::recursive_mutex> g(core->mtx); core->pinned.clear(); }   // the undo history goes with the UI
+    if (standalone && core) { std::lock_guard<std::recursive_mutex> g(core->mtx); autosaveNow(true); }
+    if (saveThread.joinable()) saveThread.join();
   }
 
 protected:
@@ -215,6 +217,15 @@ protected:
   double getVal(int i) { double v; if (lockOf(i, v)) return v; return baseArr()[i]; }
   void toast(const std::string& m) { toastMsg = m; toastUntil = nowMs() + 1100; needRepaint = true; }
   void dirty() { core->modelSeq.fetch_add(0); }
+  // sample ids the undo snapshots refer to: their data stays in the session cache (Core::pruneCache)
+  double nextPrune = 0;
+  void pinUndoSamples() {
+    core->pinned.clear();
+    for (const std::string& u : undoStack) {
+      const size_t s0 = u.find("\"samples\":["); if (s0 == std::string::npos) continue;
+      for (size_t p = u.find("\"id\":\"", s0); p != std::string::npos; p = u.find("\"id\":\"", p + 6)) core->pinned.insert(u.substr(p + 6, 16));
+    }
+  }
   // samples by id only (the session cache keeps their data): an undo step stays small with samples in the project
   void pushUndo() { undoStack.push_back(projectToString(S(), false)); if (undoStack.size() > 60) undoStack.erase(undoStack.begin()); }
   void schedulePreview() { waveDirty = true; waveDue = nowMs() + 50; needRepaint = true; }
@@ -424,18 +435,20 @@ protected:
     pushUndo(); applyPattern(*P, "GROOVE " + upper(name));
   }
   // automatic loading of new or changed sounds (another program renders into the library): a file loads once its
-  // size and time have stayed the same over two scans, onto the selected track
+  // size and time have stayed the same over two scans, onto the selected track. A file is known by its name, size and
+  // modification time, not by its folder: renaming or moving a category (here or in Explorer) loads nothing.
+  static std::string watchSig(const LibItem& it) { return fileName(it.path) + '\x1f' + std::to_string(it.size) + '\x1f' + std::to_string(it.mtime); }
   void autoLoadScan() {
     const double now = nowMs(); if (now < nextAutoScan) return; nextAutoScan = now + 700;
     LibIndex L; scanLibrary(libSoundsDir(), true, L);
-    if (!autoArmed) { watchKnown.clear(); watchPending.clear(); for (const LibItem& it : L.items) watchKnown[it.path] = { it.size, it.mtime }; autoArmed = true; return; }
+    if (!autoArmed) { watchKnown.clear(); watchPending.clear(); for (const LibItem& it : L.items) watchKnown.insert(watchSig(it)); autoArmed = true; return; }
     const LibItem* pick = nullptr;
     for (const LibItem& it : L.items) {
-      const std::pair<uint64_t, int64_t> sig{ it.size, it.mtime };
-      auto k = watchKnown.find(it.path); if (k != watchKnown.end() && k->second == sig) continue;
-      if (selfWritten.count(it.path)) { watchKnown[it.path] = sig; continue; }
+      const std::string sig = watchSig(it);
+      if (watchKnown.count(sig)) continue;
+      if (selfWritten.count(it.path)) { watchKnown.insert(sig); continue; }
       auto p = watchPending.find(it.path);
-      if (p != watchPending.end() && p->second == sig) { watchKnown[it.path] = sig; watchPending.erase(p); if (!pick || it.mtime > pick->mtime) pick = &it; }
+      if (p != watchPending.end() && p->second == sig) { watchKnown.insert(sig); watchPending.erase(p); if (!pick || it.mtime > pick->mtime) pick = &it; }
       else watchPending[it.path] = sig;
     }
     if (pick) {
@@ -688,10 +701,26 @@ protected:
   // the audio driver's values (UI::getSampleRate would be the plugin's)
   static uint audioRate() { return DISTRHO_NAMESPACE::getSampleRate(); }
   static uint audioBuffer() { return DISTRHO_NAMESPACE::getBufferSize(); }
-  void autosaveNow() {
+  // Compared without sample data (fast), written with it. With large samples the full file takes 100+ ms to build and
+  // tens of MB to write, so that happens on a worker thread from a copy of the project; `sync` (on exit) writes here.
+  std::thread saveThread; std::atomic<bool> saveBusy{ false }, saveFailed{ false };
+  void autosaveNow(bool sync = false) {
     const std::string dir = harderConfigDir(); if (dir.empty()) return;
-    const std::string p = projectToString(S(), false);   // compared without sample data (MBs), written with it
-    if (p != lastSavedProject && writeFileAtomic(dir + "autosave.json", projectToString(S()))) lastSavedProject = p;
+    if (sync && saveThread.joinable()) saveThread.join();   // on exit: let a running write finish and see whether it failed
+    if (saveFailed.exchange(false)) lastSavedProject.clear();   // the last background write failed: try again
+    const std::string p = projectToString(S(), false);
+    if (p != lastSavedProject) {
+      if (sync) {
+        if (saveThread.joinable()) saveThread.join();
+        if (writeFileAtomic(dir + "autosave.json", projectToString(S()))) lastSavedProject = p;
+      } else if (!saveBusy.load()) {   // a save still running: this change is picked up at the next tick
+        if (saveThread.joinable()) saveThread.join();
+        std::shared_ptr<Project> snap(new Project(S()));   // samples are shared, not copied
+        const std::string path = dir + "autosave.json";
+        saveBusy = true; lastSavedProject = p;
+        saveThread = std::thread([this, snap, path] { if (!writeFileAtomic(path, projectToString(*snap))) saveFailed = true; saveBusy = false; });
+      }
+    }
     if (core->uiState != lastSavedUi && writeFileAtomic(dir + "ui.json", core->uiState)) lastSavedUi = core->uiState;
   }
   void saveSettings() {
@@ -786,6 +815,7 @@ protected:
     if (te.act != TE_NONE && std::fmod(now, 500) < 30) needRepaint = true;   // caret
     if (midiLearn || keyLearn.k != AC_NONE) needRepaint = true;   // blinking learn state
     core->gcSamples();
+    if (now >= nextPrune) { nextPrune = now + 5000; pinUndoSamples(); core->pruneCache(); }
     { std::lock_guard<std::mutex> eg(expMtx); if (expStatus != expShown) { expShown = expStatus; needRepaint = true; } }
     if (core->modelSeq.load() != seenModelSeq) {   // project replaced by the host (state load)
       seenModelSeq = core->modelSeq.load(); latched.clear(); undoStack.clear();

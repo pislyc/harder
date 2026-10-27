@@ -1,4 +1,4 @@
-HARDER 1.3.0 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
+HARDER 1.3.1 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
 =================================================================================================
 
 包里有两样东西 / Two things in this package
@@ -179,6 +179,16 @@ SAMPLE 机器 SAMPLE machine（第 10 种机器）
   - 操作与网页版相同：点 step 开关；按住 step 半秒锁定后拧旋钮 = parameter lock；
     FUNC/Shift+点 step = trigless lock；双击旋钮复位；Shift 拖动 = 微调；滚轮也可调。
 
+1.3.1 修正 Fixes in 1.3.1
+  - 重命名音色分类文件夹时不再把其中的音色当作“新文件”自动载入到当前轨道。
+    Renaming a category no longer auto-loads its sounds onto the selected track.
+  - 不再引用的采样会从内存中释放（之前整个会话只增不减）。Unused samples are released from memory.
+  - 自动保存在后台线程写盘，大量采样时界面不再卡顿。Autosave writes in the background.
+  - 超长 WAV 只读取前 60 秒所需的部分，不再整个读入内存。Long WAVs: only the first 60 s are read.
+  - 导出时中文等非 ASCII 的轨道/音色名保留原文（zip 内标记为 UTF-8），不再变成“_”。
+    Export keeps non-ASCII names (UTF-8 flag in the zip).
+  - 损坏或被改写的工程/音色文件中的极端数值不再导致未定义行为（数值先限幅再转换）。
+    Out-of-range numbers in project / sound files are clamped before conversion.
 1.3.0 新增 New in 1.3.0（独立程序 standalone）
   - LAB → CONTROL：电脑键盘改键；MIDI LEARN 把控制器的按键、打击垫、旋钮、推子映射到面板上的任何按钮和旋钮
     （旋钮跟随面板或固定参数；支持相对式编码器）。Keyboard remapping and MIDI learn for every panel control.

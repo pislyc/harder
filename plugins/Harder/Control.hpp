@@ -200,14 +200,14 @@ struct ControlMap {
     defaults(); if (!o.isObj()) return;
     if (o["keys"].isObj()) {
       keys.clear();
-      for (auto& kv : o["keys"].o) { Action a; const int key = (int)kv.second.num(0); if (parseAct(kv.first, a) && keyAssignable(key) && !a.knob()) setKey(a, key); }
+      for (auto& kv : o["keys"].o) { Action a; const int key = jsonInt(kv.second.num(0), 0, 0xFFFF, 0); if (parseAct(kv.first, a) && keyAssignable(key) && !a.knob()) setKey(a, key); }
     }
     if (o["midi"].isArr()) {
       midi.clear();
       for (size_t i = 0; i < o["midi"].size(); i++) {
         const JVal& e = o["midi"][i]; MidiBind b; const std::string t = e["t"].str();
         if (t != "note" && t != "cc") continue; b.type = t == "note" ? MT_NOTE : MT_CC;
-        const int ch = (int)e["ch"].num(0), n = (int)e["n"].num(-1); if (ch < 0 || ch > 16 || n < 0 || n > 127) continue;
+        const int ch = jsonInt(e["ch"].num(0), -1, 17, -1), n = jsonInt(e["n"].num(-1), -1, 128, -1); if (ch < 0 || ch > 16 || n < 0 || n > 127) continue;
         b.ch = (int8_t)(ch - 1); b.num = (uint8_t)n; if (!parseAct(e["a"].str(), b.a)) continue;
         if (b.a.knob() && b.type != MT_CC) continue;
         b.mode = CM_ABS; for (int m = 0; m < CM_COUNT; m++) if (e["m"].str() == CC_MODE_IDS[m]) b.mode = (int8_t)m;

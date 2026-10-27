@@ -24,8 +24,14 @@
 #include <thread>
 #ifdef _WIN32
 # include <windows.h>
+# include <psapi.h>
+static double rssMB() { PROCESS_MEMORY_COUNTERS c; c.cb = sizeof c; return GetProcessMemoryInfo(GetCurrentProcess(), &c, sizeof c) ? c.WorkingSetSize / 1048576.0 : 0; }
 #else
 # include <dlfcn.h>
+# include <unistd.h>
+# include <malloc.h>
+static double rssMB() { malloc_trim(0);   // glibc keeps freed heap memory otherwise: measure what is still referenced
+  long a = 0, r = 0; FILE* f = std::fopen("/proc/self/statm", "r"); if (f) { if (std::fscanf(f, "%ld %ld", &a, &r) != 2) r = 0; std::fclose(f); } return r * (double)sysconf(_SC_PAGESIZE) / 1048576.0; }
 #endif
 using namespace hd;
 
@@ -241,6 +247,28 @@ int main(int argc, char** argv) {
     double md = 0, pk = 0; for (size_t i = 0; i < got.size() && i < ref.size(); i++) { md = std::max(md, (double)std::fabs(got[i] - ref[i])); pk = std::max(pk, (double)std::fabs(ref[i])); }
     std::printf("  SAMPLE tracks via the host state (%.1f MB): samples returned bit-exact %s; sound vs reference max diff %.2g (peak %.2f)\n", js.size() / 1048576.0, ok ? "yes" : "no", md, pk);
     CHECK(pk > 0.05 && md < 1e-6, "SAMPLE playback differs from the reference engine (%.3g)", md);
+  }
+
+  // 7: memory. Five host states in a row, each with four new 60 s float samples (46 MB of audio), then a state
+  //    without samples: the plugin keeps at most the samples of the last state or two, not all of them
+  {
+    auto mk = [](int n, uint32_t seed) {
+      std::shared_ptr<SampleData> s(new SampleData()); s->name = "long"; s->rate = 48000; s->fmt = SF_F32; s->d.resize(n); uint32_t x = seed;
+      for (int i = 0; i < n; i++) { x = x * 1664525u + 1013904223u; s->d[i] = (float)(((x >> 8) / 16777216.0 - 0.5) * 0.5); }
+      finishSample(*s); return SampleRef(s); };
+    for (int k = 0; k < 8; k++) process(nullptr);
+    std::unique_ptr<Project> E(new Project()); *E = *P; for (auto& x : E->smp) x.reset();
+    CHECK(setStateJson(projectToString(*E)) == V3_OK, "state without samples"); for (int k = 0; k < 4; k++) process(nullptr);
+    const double r0 = rssMB(); double peak = r0;
+    for (int g = 0; g < 5; g++) {
+      std::string js; { std::unique_ptr<Project> Q(new Project()); *Q = *E; for (int i = 0; i < 4; i++) Q->smp[10 + i] = mk(60 * 48000, 1000u + g * 10u + i); js = projectToString(*Q); }
+      CHECK(setStateJson(js) == V3_OK, "state %d with samples", g); js.clear(); js.shrink_to_fit();
+      for (int k = 0; k < 4; k++) process(nullptr); peak = std::max(peak, rssMB());
+    }
+    for (int r = 0; r < 2; r++) { CHECK(setStateJson(projectToString(*E)) == V3_OK, "state without samples"); for (int k = 0; k < 4; k++) process(nullptr); }
+    const double r1 = rssMB();
+    std::printf("  memory: 5 states x 4 new 60 s samples (46 MB each), then a state without samples: %.0f MB -> peak %.0f MB -> %.0f MB (+%.0f MB kept)\n", r0, peak, r1, r1 - r0);
+    CHECK(r1 - r0 < 70, "samples of earlier states kept in memory (%.0f MB)", r1 - r0);
   }
 
   v3_cpp_obj(proc)->set_processing(proc, 0); v3_cpp_obj(comp)->set_active(comp, 0);

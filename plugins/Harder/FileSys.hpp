@@ -16,6 +16,7 @@ constexpr char PATH_SEP = '/';
 struct DirEnt { std::string name; bool dir = false; int64_t mtime = 0; uint64_t size = 0; };
 
 bool readTextFile(const std::string& path, std::string& out);                 // binary-safe
+bool readFilePrefix(const std::string& path, uint64_t maxBytes, std::string& out, uint64_t* total);   // the first maxBytes; total = file size
 bool writeFileAtomic(const std::string& path, const void* data, size_t size); // path.tmp, then replaces path
 inline bool writeFileAtomic(const std::string& path, const std::string& s) { return writeFileAtomic(path, s.data(), s.size()); }
 bool listDir(const std::string& dir, std::vector<DirEnt>& out);   // without . and .., hidden/system entries skipped

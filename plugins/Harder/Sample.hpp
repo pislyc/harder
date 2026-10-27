@@ -165,6 +165,23 @@ inline SampleRef decodeWav(const std::string& name, const uint8_t* d, size_t n, 
   }
   finishSample(*s); return s;
 }
+// how many bytes of a WAV file decodeWav needs (header + at most SAMPLE_MAX_SECONDS of audio), from a prefix of the
+// file; 0 if the prefix does not show where the audio starts
+inline uint64_t wavBytesNeeded(const uint8_t* d, size_t n, bool* cut = nullptr) {
+  if (n < 12 || std::memcmp(d, "RIFF", 4) || std::memcmp(d + 8, "WAVE", 4)) return 0;
+  auto u32 = [&](size_t o) { return (uint32_t)d[o] | (uint32_t)d[o + 1] << 8 | (uint32_t)d[o + 2] << 16 | (uint32_t)d[o + 3] << 24; };
+  uint64_t o = 12; uint32_t rate = 0, ba = 0, dataSz = 0; uint64_t dataAt = 0; bool fmt = false;
+  while (o + 8 <= n) {
+    const uint32_t sz = u32((size_t)o + 4);
+    if (!std::memcmp(d + o, "fmt ", 4) && o + 8 + 16 <= n) { rate = u32((size_t)o + 12); ba = (uint32_t)(d[o + 20] | d[o + 21] << 8); fmt = true; }
+    else if (!std::memcmp(d + o, "data", 4)) { dataAt = o + 8; dataSz = sz; if (fmt) break; }
+    o += 8 + (uint64_t)sz + (sz & 1);
+  }
+  if (!fmt || !dataAt || !rate || !ba) return 0;
+  const uint64_t maxData = (uint64_t)(SAMPLE_MAX_SECONDS * rate + 2) * ba;
+  if (cut) *cut = dataSz > maxData;
+  return dataAt + std::min<uint64_t>(dataSz, maxData);
+}
 // mono WAV of a sample in its stored format (saving to the library)
 inline std::vector<uint8_t> encodeWav(const SampleData& s) {
   const std::vector<uint8_t> b = s.bytes(); const uint32_t bits = s.fmt == SF_S16 ? 16 : s.fmt == SF_S24 ? 24 : 32, ba = bits / 8, r = (uint32_t)std::lround(s.rate);

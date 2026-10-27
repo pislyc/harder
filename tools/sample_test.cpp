@@ -194,6 +194,46 @@ int main(int argc, char** argv) {
       LibIndex B; scanLibrary(joinPath(libSoundsDir(), ""), true, B); const LibItem* it = nullptr; for (auto& x : B.items) if (x.cat == "Bass") it = &x;
       SoundDef e; CHECK(it && loadSoundItem(*it, e, &cache, err) && e.p[0] == -5 && e.p[3] == 0 && e.p[4] == 127 && e.smp, "external sound file: %s", err.c_str()); }
   }
+  // ===== K: 1.3.1 fixes =====
+  {
+    // export names keep non-ASCII letters; zip entries with such names carry the UTF-8 flag, ASCII ones do not (web-identical)
+    CHECK(safeName("底鼓 Kick #1") == "底鼓_Kick_1" && safeName("Snap 808") == "Snap_808", "safeName: %s", safeName("底鼓 Kick #1").c_str());
+    std::vector<ZipEntry> zf{ { "01_底鼓.wav", { 1, 2, 3 } }, { "02_Kick.wav", { 4 } } }; const std::vector<uint8_t> z = zipStore(zf);
+    CHECK(z.size() > 30 && (z[6] | z[7] << 8) == 0x800, "UTF-8 flag on the local header");
+    size_t second = 30 + zf[0].name.size() + 3; CHECK((z[second + 6] | z[second + 7] << 8) == 0, "no flag on an ASCII name");
+    // large WAV: only the header and 60 s are read; truncation is reported only when the audio really is longer
+    auto writeWav = [&](const std::string& path, int secs, bool tailChunk, uint32_t junkBefore) {
+      const int rate = 8000; const uint32_t nb = (uint32_t)(secs * rate * 2); std::string f;
+      auto u32 = [&](uint32_t x) { for (int i = 0; i < 4; i++) f += (char)(x >> (8 * i)); }; auto u16 = [&](uint32_t x) { f += (char)(x & 255); f += (char)(x >> 8); };
+      f += "RIFF"; u32(0); f += "WAVE"; f += "fmt "; u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
+      if (junkBefore) { f += "JUNK"; u32(junkBefore); f.append(junkBefore, '\0'); }
+      f += "data"; u32(nb); for (uint32_t i = 0; i < nb / 2; i++) u16((uint32_t)(int16_t)(1000 * std::sin(i * 0.01)));
+      if (tailChunk) { f += "LIST"; u32(1 << 20); f.append(1 << 20, 'x'); }
+      writeFileAtomic(path, f); return f.size(); };
+    std::string err; bool cut = false; SampleRef s;
+    const size_t big = writeWav(joinPath(gDir, "long.wav"), 600, false, 0);   // 10 min at 8 kHz: 9.6 MB, more than the 4 MB first read
+    CHECK(loadWavFile(joinPath(gDir, "long.wav"), s, err, &cut) && cut && s->len == 60 * 8000, "10 min file: len %d cut %d %s (file %zu)", s ? s->len : -1, cut, err.c_str(), big);
+    writeWav(joinPath(gDir, "tail.wav"), 30, true, 0);   // 30 s + a 1 MB chunk after the audio, file > 4 MB? no: then make it longer
+    writeWav(joinPath(gDir, "tail2.wav"), 50, true, 0);
+    cut = true; CHECK(loadWavFile(joinPath(gDir, "tail2.wav"), s, err, &cut) && !cut && s->len == 50 * 8000, "50 s + trailing chunk: not cut (len %d cut %d)", s ? s->len : -1, cut);
+    cut = false; writeWav(joinPath(gDir, "junk.wav"), 70, false, 5u << 20);   // 5 MB of other chunks before the audio
+    CHECK(loadWavFile(joinPath(gDir, "junk.wav"), s, err, &cut) && cut && s->len == 60 * 8000, "audio after 5 MB of chunks: len %d cut %d %s", s ? s->len : -1, cut, err.c_str());
+    { std::vector<double> l(480000, 0.2); const auto w = makeWav(1, 16, 1, 8000, { l }); uint64_t tot = 0; std::string pre;
+      writeFileAtomic(joinPath(gDir, "r.wav"), w.data(), w.size()); CHECK(readFilePrefix(joinPath(gDir, "r.wav"), 100, pre, &tot) && pre.size() == 100 && tot == w.size(), "readFilePrefix"); }
+    // the session cache lets go of samples nothing refers to, keeps pinned ones (undo snapshots) and ones still in use
+    std::unique_ptr<Core> core(new Core()); defaultProject(*core->S);
+    SampleRef a = noiseSample("a", 100, 48000, SF_S16, 1), b2 = noiseSample("b", 100, 48000, SF_S16, 2), c = noiseSample("c", 100, 48000, SF_S16, 3);
+    core->cache.add(a); core->cache.add(b2); core->cache.add(c); core->S->smp[0] = a; const std::string bid = b2->id, cid = c->id; b2.reset(); c.reset();
+    core->pinned.insert(bid);
+    CHECK(core->pruneCache() == 1 && core->cache.find(a->id) && core->cache.find(bid) && !core->cache.find(cid), "pruneCache");
+    core->pinned.clear(); CHECK(core->pruneCache() == 1 && !core->cache.find(bid), "unpinned sample released");
+    // a sound's own WAV counts in its change signature (auto-load of a re-rendered sample)
+    { const std::string dir = joinPath(libSoundsDir(), "Sig"); double p[NP]; defaultTrackParams(M_SMP, p);
+      const std::string jp = saveSound(dir, "pair", M_SMP, p, a, err); LibIndex L1; scanLibrary(libSoundsDir(), true, L1);
+      const std::vector<uint8_t> w2 = encodeWav(*noiseSample("pair", 3000, 48000, SF_S16, 9)); writeFileAtomic(joinPath(dir, "pair.wav"), w2.data(), w2.size());
+      LibIndex L2; scanLibrary(libSoundsDir(), true, L2); uint64_t s1 = 0, s2 = 0; for (auto& it : L1.items) if (it.path == jp) s1 = it.size; for (auto& it : L2.items) if (it.path == jp) s2 = it.size;
+      CHECK(s1 && s2 && s1 != s2, "the sound's WAV is part of its size (%llu vs %llu)", (unsigned long long)s1, (unsigned long long)s2); }
+  }
   // ===== J: sample lifetime between the main thread and the audio thread =====
   {
     std::unique_ptr<Core> core(new Core()); std::unique_ptr<Engine> A(new Engine()); core->eng = A.get();

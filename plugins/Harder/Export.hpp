@@ -22,10 +22,11 @@ inline std::vector<uint8_t> zipStore(const std::vector<ZipEntry>& files) {
   uint32_t off = 0;
   for (const ZipEntry& f : files) {
     const uint32_t crc = crc32(f.data.data(), f.data.size()), sz = (uint32_t)f.data.size(), nl = (uint32_t)f.name.size();
-    u32(out, 0x04034b50); u16(out, 20); u16(out, 0); u16(out, 0); u16(out, 0); u16(out, 0x5a21);
+    uint32_t flags = 0; for (unsigned char ch : f.name) if (ch >= 0x80) flags = 0x800;   // general purpose bit 11: the name is UTF-8
+    u32(out, 0x04034b50); u16(out, 20); u16(out, flags); u16(out, 0); u16(out, 0); u16(out, 0x5a21);
     u32(out, crc); u32(out, sz); u32(out, sz); u16(out, nl); u16(out, 0);
     out.insert(out.end(), f.name.begin(), f.name.end()); out.insert(out.end(), f.data.begin(), f.data.end());
-    u32(central, 0x02014b50); u16(central, 20); u16(central, 20); u16(central, 0); u16(central, 0); u16(central, 0); u16(central, 0x5a21);
+    u32(central, 0x02014b50); u16(central, 20); u16(central, 20); u16(central, flags); u16(central, 0); u16(central, 0); u16(central, 0x5a21);
     u32(central, crc); u32(central, sz); u32(central, sz); u16(central, nl); u16(central, 0); u16(central, 0); u16(central, 0); u16(central, 0);
     u32(central, 0); u32(central, off); central.insert(central.end(), f.name.begin(), f.name.end());
     off += 30 + nl + sz;
@@ -110,9 +111,10 @@ inline bool renderLoop(const Project& S, double sr, int loops, int solo, std::ve
   return true;
 }
 
-inline std::string safeName(const std::string& s) {   // web: s.replace(/[^A-Za-z0-9]+/g, '_')
+// web: s.replace(/[^A-Za-z0-9]+/g, '_') for ASCII; letters of other scripts (UTF-8, e.g. Chinese names) are kept
+inline std::string safeName(const std::string& s) {
   std::string o; bool run = false;
-  for (char c : s) { const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); if (ok) { o += c; run = false; } else if (!run) { o += '_'; run = true; } }
+  for (char c : s) { const unsigned char u = (unsigned char)c; const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || u >= 0x80; if (ok) { o += c; run = false; } else if (!run) { o += '_'; run = true; } }
   return o;
 }
 inline std::string soundName(const TrackM& t) { return t.pre.size() ? t.pre : std::string(MACH_NAMES[t.m]); }
