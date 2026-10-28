@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstring>
 #include <condition_variable>
+#include <mutex>
 #ifdef _WIN32
 # ifndef NOMINMAX
 #  define NOMINMAX
@@ -316,7 +317,17 @@ END_NAMESPACE_DISTRHO
 namespace hd {
 Core* harderCore(void* p) { return p ? &static_cast<DISTRHO_NAMESPACE::HarderPlugin*>(p)->core : nullptr; }
 bool harderIsStandalone() { return std::strstr(DISTRHO_NAMESPACE::getPluginFormatName(), "Standalone") != nullptr; }
-std::string harderConfigDir() { const char* d = DISTRHO_NAMESPACE::getSpecialDir(DISTRHO_NAMESPACE::kSpecialDirDocumentsForPlugin); return d ? d : ""; }
+std::string harderConfigDir() {
+  const char* d = DISTRHO_NAMESPACE::getSpecialDir(DISTRHO_NAMESPACE::kSpecialDirDocumentsForPlugin); const std::string s = d ? d : "";
+  // DPF creates only the last level: without a Documents folder (macOS: DPF does not create ~/Documents) nothing
+  // could be saved, so the parents are made once
+  static std::once_flag once;
+  if (!s.empty()) std::call_once(once, [&s] {
+    const std::string self = dirName(s), parent = dirName(self);
+    if (!pathExists(self)) { if (!parent.empty()) makeDir(parent); makeDir(self); }
+  });
+  return s;
+}
 } // namespace hd
 
 // DPF patch (standalone, RtMidi): MIDI clock and transport messages, from the MIDI driver's thread

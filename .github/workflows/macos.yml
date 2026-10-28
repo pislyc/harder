@@ -93,24 +93,27 @@ jobs:
 
       - name: Run the app (self-test, arm64 and x86_64)
         run: |
-          B=bin-macos/HARDER.app/Contents/MacOS/HARDER; mkdir -p shots
+          B=bin-macos/HARDER.app/Contents/MacOS/HARDER; mkdir -p shots; fail=0
           for a in arm64 x86_64; do
             if [ $a = x86_64 ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then continue; fi
+            # HOME is the folder the app uses (~/Documents/HARDER): a fresh one, without even a Documents folder
             H=$RUNNER_TEMP/home-$a; rm -rf "$H"; mkdir -p "$H"
-            # HOME is the folder the app uses (~/Documents/HARDER): a fresh one, as on a first start
             HOME=$H HARDER_SELFTEST=$H/selftest.json arch -$a "$B" > "app-$a.log" 2>&1 &
             pid=$!
-            for i in $(seq 1 60); do [ -f "$H/selftest.json.ready" ] && break; sleep 0.5; done
+            for i in $(seq 1 60); do { [ -f "$H/selftest.json.ready" ] || ! kill -0 $pid 2>/dev/null; } && break; sleep 0.5; done
             screencapture -x "shots/HARDER-$a.png" 2>/dev/null || echo "screencapture failed" >> "app-$a.log"
             ok=0; for i in $(seq 1 60); do if ! kill -0 $pid 2>/dev/null; then ok=1; break; fi; sleep 0.5; done
-            if [ $ok = 0 ]; then echo "- app $a: did not quit within 30 s of the self-test (killed)" >> "$SUM"; kill -9 $pid; exit 1; fi
+            if [ $ok = 0 ]; then kill -9 $pid; fi
             rc=0; wait $pid || rc=$?
             cp "$H/selftest.json" "selftest-$a.json" 2>/dev/null || true
             files=$(ls "$H/Documents/HARDER" 2>/dev/null | tr '\n' ' ')
-            echo "- app $a: exit code $rc; report: \`$(cat "$H/selftest.json" 2>/dev/null || echo none)\`; written on quit: $files" >> "$SUM"
-            [ $rc = 0 ] && [ -f "$H/selftest.json" ] && [ -f "$H/Documents/HARDER/autosave.json" ]
+            line="- app $a: $([ $ok = 1 ] && echo "exit code $rc" || echo "did not quit within 30 s (killed)"); ready marker: $([ -f "$H/selftest.json.ready" ] && echo yes || echo no); report: \`$(cat "$H/selftest.json" 2>/dev/null || echo none)\`; files in Documents/HARDER: ${files:-none}"
+            echo "$line" | tee -a "$SUM"
+            echo "--- app-$a.log (last 40 lines)"; tail -n 40 "app-$a.log"
+            [ $ok = 1 ] && [ $rc = 0 ] && [ -f "$H/selftest.json" ] && [ -f "$H/Documents/HARDER/autosave.json" ] || fail=1
           done
-          if ls ~/Library/Logs/DiagnosticReports/HARDER* 2>/dev/null; then echo "- crash reports found" >> "$SUM"; cp ~/Library/Logs/DiagnosticReports/HARDER* shots/; exit 1; fi
+          if ls ~/Library/Logs/DiagnosticReports/HARDER* 2>/dev/null; then echo "- crash reports found (in logs-and-screenshots)" | tee -a "$SUM"; cp ~/Library/Logs/DiagnosticReports/HARDER* shots/; fail=1; fi
+          exit $fail
 
       - name: Package
         run: |
