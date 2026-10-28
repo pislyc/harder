@@ -1,6 +1,18 @@
-# HARDER — verification report (2.0.0: standalone program + VST3 plugin)
+# HARDER — verification report (2.0.1: standalone program + VST3 plugin; macOS standalone)
 
-All numbers below were measured in the build environment (Linux x86-64 VM, 2 cores; Windows binaries run under Wine 9).
+All numbers below were measured in the build environment (Linux x86-64 VM, 2 cores; Windows binaries run under Wine 9),
+except section G's GitHub Actions part, which runs on a GitHub macOS runner.
+
+## G. New in 2.0.1: macOS standalone (HARDER.app, Universal arm64 + x86_64)
+
+| check | result |
+|---|---|
+| engine on AArch64 (the Apple Silicon instruction set), before any Mac: the tools built with clang 18 for aarch64-linux, run under qemu-aarch64, flush-to-zero through FPCR.FZ (as the app does) | 36 equivalence renders (12 scenarios x 44.1 / 48 / 96 kHz) **bit-identical** to the Linux x86-64 renders (SHA-256, `tools/equiv.sh`), so also 5.96e-8 from the web engine as before; `v2_test` 74/74 (detection 11/12 at 50, 12/12 at 85, same as x86), `sample_test` 155/155, `control_test` 61 809/61 809 |
+| engine with clang on x86-64 (the Intel slice's compiler family) | 36 renders bit-identical to the gcc build |
+| the private libm everywhere | transient detection used the C runtime's `log10`; now `hm_log10` like the engine (slice points cannot depend on the platform). v2/sample tests unchanged under ASan/UBSan |
+| Linux and Windows after the changes | Linux VST3 host test passed (multi-out, memory, automation, samples unchanged); Windows exe self-test under Wine: WASAPI open, Space by scan code started the sequencer, report written, quit with autosave; Linux standalone self-test under JACK: same |
+| GitHub Actions (`.github/workflows/macos.yml`, macos-15 arm64 runner) | builds the Universal app with Xcode, checks the archs / linked libraries / signature / Info.plist, runs `tools/equiv.sh` against the same SHA-256 list natively on arm64 and under Rosetta (x86_64), the 8 test suites on arm64, and starts the app on both architectures in self-test mode (Space by its macOS key code -> sequencer runs, JSON report, Quit through `NSApp terminate:` -> exit 0 with autosave.json written, no crash report), with a screenshot. Results: the run's Summary page |
+| not verified here | a real Mac: sound from the speakers, a MIDI keyboard / IAC clock, the file dialogs, Retina scaling, Gatekeeper's first-start prompt. The macOS-only code (key-code table, layout key names, menu and Quit, Finder, CJK fonts) is only compiled and exercised on the CI runner |
 
 ## F. New in 2.0.0: user kits, chain / song, slices, stereo, resampling, MIDI clock, multi-out
 

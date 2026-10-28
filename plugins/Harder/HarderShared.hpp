@@ -7,6 +7,10 @@
 // Host parameters are a mirror of selected model values held in atomics; setParameterValue may be
 // called from either thread, so it only stores and flags.
 #pragma once
+// program version (VST3 / about / packaging); scripts read it from here
+#define HARDER_VER_MAJOR 2
+#define HARDER_VER_MINOR 0
+#define HARDER_VER_PATCH 1
 #include "Model.hpp"
 #include "HostParams.hpp"
 #include "FileSys.hpp"

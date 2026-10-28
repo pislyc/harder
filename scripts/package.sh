@@ -1,7 +1,8 @@
 #!/bin/bash
 # Packages the Windows plugin and the source.
 set -e
-ROOT=$(cd "$(dirname "$0")/.." && pwd); V=2.0.0; D=$ROOT/dist
+ROOT=$(cd "$(dirname "$0")/.." && pwd); D=$ROOT/dist
+V=$(awk '/define HARDER_VER_MAJOR/{a=$3} /define HARDER_VER_MINOR/{b=$3} /define HARDER_VER_PATCH/{c=$3} END{print a"."b"."c}' "$ROOT/plugins/Harder/HarderShared.hpp")
 rm -rf $D && mkdir -p $D/HARDER-$V-win64/licenses
 cp -r $ROOT/bin-windows/HARDER.vst3 $ROOT/bin-windows/HARDER.exe $D/HARDER-$V-win64/
 cp $ROOT/INSTALL.txt $ROOT/VERIFY.md $D/HARDER-$V-win64/

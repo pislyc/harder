@@ -1,3 +1,129 @@
+diff --git a/dgl/src/ApplicationPrivateData.cpp b/dgl/src/ApplicationPrivateData.cpp
+index ca0d27f9..b7864aa4 100644
+--- a/dgl/src/ApplicationPrivateData.cpp
++++ b/dgl/src/ApplicationPrivateData.cpp
+@@ -74,6 +74,11 @@ Application::PrivateData::PrivateData(const bool standalone, const Type type)
+    #else
+     puglSetWorldString(world, PUGL_CLASS_NAME, DISTRHO_MACRO_AS_STRING(DGL_NAMESPACE));
+    #endif
++
++   #if defined(DISTRHO_OS_MAC) && defined(DPF_MACOS_APP_MENU)
++    if (standalone)
++        puglMacOSInstallAppMenu();
++   #endif
+ }
+ 
+ Application::PrivateData::~PrivateData()
+diff --git a/dgl/src/pugl.cpp b/dgl/src/pugl.cpp
+index f618e071..56a8809e 100644
+--- a/dgl/src/pugl.cpp
++++ b/dgl/src/pugl.cpp
+@@ -537,6 +537,89 @@ void puglMacOSShowCentered(PuglView* const view)
+     }
+ }
+ 
++#ifdef DPF_MACOS_APP_MENU
++// --------------------------------------------------------------------------------------------------------------------
++// macOS specific (standalone): a main menu with the usual application items. Quit (Cmd+Q, the Dock menu, logout)
++// closes the windows instead of letting NSApp exit the process at once, so the program shuts down the normal way
++// (UI and plugin destructors run, the audio driver is stopped).
++
++# ifdef DISTRHO_MACOS_NAMESPACE_MACRO
++#  define PuglAppDelegate DISTRHO_MACOS_NAMESPACE_MACRO(DGL_NAMESPACE, DISTRHO_MACOS_NAMESPACE_TIME, PuglAppDelegate)
++# endif
++
++@interface PuglAppDelegate : NSObject<NSApplicationDelegate>
++@end
++
++@implementation PuglAppDelegate
++- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender
++{
++    bool closing = false;
++    NSArray* const windows = [[[sender windows] copy] autorelease];
++    for (NSWindow* w in windows)
++    {
++        if (([w styleMask] & NSWindowStyleMaskClosable) == 0 || (![w isVisible] && ![w isMiniaturized]))
++            continue;
++        if ([w isMiniaturized])
++            [w deminiaturize:nil];
++        [w performClose:nil];
++        closing = true;
++    }
++    // nothing left to close: let NSApp end the process
++    return closing ? NSTerminateCancel : NSTerminateNow;
++}
++@end
++
++static NSMenuItem* puglMacOSAddMenuItem(NSMenu* const menu, NSString* const title, const SEL action,
++                                        NSString* const key, const NSEventModifierFlags mods = NSEventModifierFlagCommand)
++{
++    NSMenuItem* const item = [[[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:key] autorelease];
++    [item setKeyEquivalentModifierMask:mods];
++    [menu addItem:item];
++    return item;
++}
++
++void puglMacOSInstallAppMenu()
++{
++    NSApplication* const app = [NSApplication sharedApplication];
++    if ([app mainMenu] != nil && [[app mainMenu] numberOfItems] > 0)
++        return;
++
++    static PuglAppDelegate* delegate = nil;
++    if (delegate == nil)
++        delegate = [PuglAppDelegate new];
++    if ([app delegate] == nil)
++        [app setDelegate:delegate];
++
++    NSString* const name = [[NSProcessInfo processInfo] processName];
++    NSMenu* const bar = [[[NSMenu alloc] initWithTitle:@""] autorelease];
++
++    NSMenuItem* const appItem = [[[NSMenuItem alloc] initWithTitle:name action:nil keyEquivalent:@""] autorelease];
++    NSMenu* const appMenu = [[[NSMenu alloc] initWithTitle:name] autorelease];
++    puglMacOSAddMenuItem(appMenu, [@"About " stringByAppendingString:name], @selector(orderFrontStandardAboutPanel:), @"", 0);
++    [appMenu addItem:[NSMenuItem separatorItem]];
++    puglMacOSAddMenuItem(appMenu, [@"Hide " stringByAppendingString:name], @selector(hide:), @"h");
++    puglMacOSAddMenuItem(appMenu, @"Hide Others", @selector(hideOtherApplications:), @"h",
++                         NSEventModifierFlagCommand | NSEventModifierFlagOption);
++    puglMacOSAddMenuItem(appMenu, @"Show All", @selector(unhideAllApplications:), @"", 0);
++    [appMenu addItem:[NSMenuItem separatorItem]];
++    puglMacOSAddMenuItem(appMenu, [@"Quit " stringByAppendingString:name], @selector(terminate:), @"q");
++    [appItem setSubmenu:appMenu];
++    [bar addItem:appItem];
++
++    NSMenuItem* const winItem = [[[NSMenuItem alloc] initWithTitle:@"Window" action:nil keyEquivalent:@""] autorelease];
++    NSMenu* const winMenu = [[[NSMenu alloc] initWithTitle:@"Window"] autorelease];
++    puglMacOSAddMenuItem(winMenu, @"Minimize", @selector(performMiniaturize:), @"m");
++    puglMacOSAddMenuItem(winMenu, @"Zoom", @selector(performZoom:), @"", 0);
++    [winMenu addItem:[NSMenuItem separatorItem]];
++    puglMacOSAddMenuItem(winMenu, @"Close Window", @selector(performClose:), @"w");
++    [winItem setSubmenu:winMenu];
++    [bar addItem:winItem];
++
++    [app setMainMenu:bar];
++    [app setWindowsMenu:winMenu];
++}
++#endif // DPF_MACOS_APP_MENU
++
+ // --------------------------------------------------------------------------------------------------------------------
+ 
+ #elif defined(DISTRHO_OS_WINDOWS)
+diff --git a/dgl/src/pugl.hpp b/dgl/src/pugl.hpp
+index 125707af..a627dca1 100644
+--- a/dgl/src/pugl.hpp
++++ b/dgl/src/pugl.hpp
+@@ -102,6 +102,11 @@ PuglStatus puglMacOSRemoveChildWindow(PuglView* view, PuglView* child);
+ // macOS specific, center view based on parent coordinates (if there is one)
+ void puglMacOSShowCentered(PuglView* view);
+ 
++#ifdef DPF_MACOS_APP_MENU
++// macOS specific (standalone), main menu with Quit that closes the windows
++void puglMacOSInstallAppMenu();
++#endif
++
+ #elif defined(DISTRHO_OS_WASM)
+ 
+ // nothing here yet
 diff --git a/distrho/DistrhoStandaloneUtils.hpp b/distrho/DistrhoStandaloneUtils.hpp
 index 8fffcdaa..d83dfb91 100644
 --- a/distrho/DistrhoStandaloneUtils.hpp
@@ -37,7 +163,7 @@ index 8fffcdaa..d83dfb91 100644
  
  // -----------------------------------------------------------------------------------------------------------
 diff --git a/distrho/extra/FileBrowserDialogImpl.cpp b/distrho/extra/FileBrowserDialogImpl.cpp
-index bb431ab7..4f65787c 100644
+index bb431ab7..904cc121 100644
 --- a/distrho/extra/FileBrowserDialogImpl.cpp
 +++ b/distrho/extra/FileBrowserDialogImpl.cpp
 @@ -266,6 +266,17 @@ struct FileBrowserData {
@@ -58,6 +184,29 @@ index bb431ab7..4f65787c 100644
          uint threadId;
          threadCancelled = false;
          threadHandle = _beginthreadex(nullptr, 0, _run, this, 0, &threadId);
+@@ -513,6 +524,22 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
+              encoding:NSUTF8StringEncoding];
+     [nsBasePanel setTitle:titleString];
+ 
++   #ifdef DPF_MAC_SAVE_DEFAULT_NAME
++    // suggested file name in the save panel
++    if (options.saving && options.defaultName != nullptr && options.defaultName[0] != '\0')
++    {
++        NSString* const nameString = [[NSString alloc]
++            initWithBytes:options.defaultName
++                   length:strlen(options.defaultName)
++                 encoding:NSUTF8StringEncoding];
++        if (nameString != nil)
++        {
++            [nsBasePanel setNameFieldStringValue:nameString];
++            [nameString release];
++        }
++    }
++   #endif
++
+     FileBrowserData* const handleptr = handle.get();
+ 
+     dispatch_async(dispatch_get_main_queue(), ^
 diff --git a/distrho/src/DistrhoPluginVST.hpp b/distrho/src/DistrhoPluginVST.hpp
 index 461a7ec5..173fc2f4 100644
 --- a/distrho/src/DistrhoPluginVST.hpp

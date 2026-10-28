@@ -7,8 +7,7 @@
 #include <ctime>
 #include <algorithm>
 #include <cstdlib>
-#include <xmmintrin.h>
-#include <pmmintrin.h>
+#include "ftz.hpp"
 using namespace hd;
 
 static std::string readFile(const char* p) { std::ifstream f(p, std::ios::binary); std::stringstream s; s << f.rdbuf(); return s.str(); }
@@ -45,7 +44,7 @@ void loadInit(Engine& E, const JVal& st) {
 
 int main(int argc, char** argv) {
   if (argc < 3) { std::fprintf(stderr, "usage: render scen.json out.f32 [block]\n"); return 1; }
-  _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON); _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+  harderFtz();
   JVal sc; if (!parseJson(readFile(argv[1]), sc)) { std::fprintf(stderr, "bad json\n"); return 1; }
   const double sr = sc["sr"].num(48000); const int n = (int)sc["n"].num(); const int block = (int)sc["block"].num(128);
   const int pblock = argc > 3 ? std::atoi(argv[3]) : block;

@@ -16,6 +16,7 @@
 #include <mutex>
 #include <algorithm>
 #include <cstdio>
+#include "hmath/hmath.h"
 
 namespace hd {
 
@@ -234,6 +235,12 @@ inline std::vector<uint8_t> encodeWav(const SampleData& s) {
   return o;
 }
 
+// detection uses the private libm too, so the slice points do not depend on the platform's C runtime
+#ifndef HD_USE_CRT_MATH
+inline double slcLog10(double x) { return hm_log10(x); }
+#else
+inline double slcLog10(double x) { return std::log10(x); }
+#endif
 inline double clampSens(double v) { return v < 0 ? 0 : v > 100 ? 100 : v; }
 // ---------- transient detection (slice points of a break) ----------
 // Onsets = rises of the short-time energy of the first difference (it weights the attack of a hit over the body of
@@ -247,15 +254,15 @@ inline std::vector<int> detectSlices(const SampleData& s, double sens, int maxN 
   for (int k = 0; k < frames; k++) {
     double a = 0, b = 0; const int i0 = k * H;
     for (int i = i0; i < i0 + W; i++) { const double x = m(i), dx = x - (i > 0 ? m(i - 1) : 0); a += dx * dx; b += x * x; }
-    e[k] = 10 * std::log10(a / W + 1e-12); lv[k] = b / W; emax = std::max(emax, lv[k]);
+    e[k] = 10 * slcLog10(a / W + 1e-12); lv[k] = b / W; emax = std::max(emax, lv[k]);
   }
-  const double rise = 12 - clampSens(sens) * 0.1, floorDb = 10 * std::log10(emax) - 45;   // sens 0: 12 dB rise, 50: 7 dB, 100: 2 dB
+  const double rise = 12 - clampSens(sens) * 0.1, floorDb = 10 * slcLog10(emax) - 45;   // sens 0: 12 dB rise, 50: 7 dB, 100: 2 dB
   const int gap = std::max(1, (int)std::lround(s.rate * 0.05 / H));
   struct On { int k; double r; }; std::vector<On> on;
   for (int k = 2; k + 1 < frames; k++) {
     // frame k-2 ends where frame k starts (entirely before an onset in frame k); frame k+1 is entirely after it
     const double r = std::max(e[k], e[k + 1]) - e[k - 2];
-    if (r >= rise && 10 * std::log10(lv[k] + 1e-12) > floorDb) {
+    if (r >= rise && 10 * slcLog10(lv[k] + 1e-12) > floorDb) {
       if (!on.empty() && k - on.back().k < gap) { if (r > on.back().r && k - on.back().k < 2) on.back() = { k, r }; continue; }
       on.push_back({ k, r });
     }
@@ -279,7 +286,7 @@ inline std::vector<int> detectSlices(const SampleData& s, double sens, int maxN 
     out.push_back(at);
   }
   // sound before the first onset (an upbeat, a hit already at 0) is a slice of its own
-  if (out.empty() || (out[0] > (int)(s.rate * 0.02) && 10 * std::log10(lv[0] + 1e-12) > floorDb)) out.insert(out.begin(), 0);
+  if (out.empty() || (out[0] > (int)(s.rate * 0.02) && 10 * slcLog10(lv[0] + 1e-12) > floorDb)) out.insert(out.begin(), 0);
   else if (!out.empty() && out[0] <= (int)(s.rate * 0.02)) out[0] = 0;
   if ((int)out.size() > maxN) out.resize(maxN);
   return out;

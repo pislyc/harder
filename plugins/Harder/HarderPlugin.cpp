@@ -21,6 +21,12 @@
 # include <xmmintrin.h>
 # define HARDER_HAVE_SSE 1
 #endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+// AArch64: FPCR.FZ (bit 24) flushes denormal inputs and results to zero, like MXCSR FTZ | DAZ on x86
+static inline uint64_t harderGetFpcr() { uint64_t v; __asm__ __volatile__("mrs %0, fpcr" : "=r"(v)); return v; }
+static inline void harderSetFpcr(uint64_t v) { __asm__ __volatile__("msr fpcr, %0" : : "r"(v)); }
+# define HARDER_HAVE_FPCR 1
+#endif
 
 START_NAMESPACE_DISTRHO
 using namespace hd;
@@ -111,7 +117,7 @@ protected:
   const char* getMaker() const override { return "HARDER"; }
   const char* getHomePage() const override { return "https://github.com/pislyc/harder"; }
   const char* getLicense() const override { return "GPL-3.0-or-later"; }
-  uint32_t getVersion() const override { return d_version(2, 0, 0); }
+  uint32_t getVersion() const override { return d_version(HARDER_VER_MAJOR, HARDER_VER_MINOR, HARDER_VER_PATCH); }
 
   // outputs: main stereo pair, then one stereo pair per track (plugin multi-out)
   void initAudioPort(bool input, uint32_t index, AudioPort& port) override {
@@ -206,6 +212,9 @@ protected:
 #ifdef HARDER_HAVE_SSE
     const unsigned csr = _mm_getcsr(); _mm_setcsr(csr | 0x8040);   // flush denormals to zero (FTZ | DAZ)
 #endif
+#ifdef HARDER_HAVE_FPCR
+    const uint64_t fpcr = harderGetFpcr(); harderSetFpcr(fpcr | (1ull << 24));
+#endif
     core.link.drain(*eng);   // never blocks: if the UI holds the link, commands wait one block
     core.applyHost(*eng);
     const double tBlock = (double)eng->time;
@@ -286,6 +295,9 @@ protected:
     } else clkOut.wasPlaying = false;
 #ifdef HARDER_HAVE_SSE
     _mm_setcsr(csr);
+#endif
+#ifdef HARDER_HAVE_FPCR
+    harderSetFpcr(fpcr);
 #endif
     const double used = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const double load = frames > 0 ? used / (frames / sr) : 0;

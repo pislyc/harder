@@ -1,4 +1,4 @@
-HARDER 2.0.0 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
+HARDER 2.0.1 — Synth percussion & groove box — Windows (64-bit): standalone program + VST3 plugin
 =================================================================================================
 
 包里有两样东西 / Two things in this package
@@ -232,6 +232,14 @@ Chain / Song（PATTERN 键上方的 PTN / CHN / SNG）
   - 右上角 DSP 读数是音频线程的实际负载（处理时间 / buffer 时长，0.5 秒平均）。
   - 操作与网页版相同：点 step 开关；按住 step 半秒锁定后拧旋钮 = parameter lock；
     FUNC/Shift+点 step = trigless lock；双击旋钮复位；Shift 拖动 = 微调；滚轮也可调。
+
+2.0.1
+  - 新增 macOS 独立程序（Apple Silicon + Intel，单独的下载包，见其中的 INSTALL-macOS.txt）。
+    New: the macOS standalone (separate download, see INSTALL-macOS.txt inside).
+  - Windows 版功能不变；声音引擎对所有工程逐样本不变（36 个测试渲染与 2.0.0 bit-identical）。
+    采样的瞬态检测（DETECT / AUTO）改用程序自带的数学库，各平台结果一致。
+    Windows: unchanged; the engine renders bit-identically to 2.0.0. Transient detection now uses the private maths
+    library, so the slice points are the same on every platform.
 
 2.0.0 新增 New in 2.0.0
   - 用户套件：8 条轨的音色连同采样存成套件，放进库里分类管理。User kits in the library.

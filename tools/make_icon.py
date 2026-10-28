@@ -25,3 +25,5 @@ out = os.path.join(root, 'plugins', 'Harder', 'res', 'harder.ico')
 im.save(out, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 im.resize((256, 256), Image.LANCZOS).save(os.path.join(root, 'plugins', 'Harder', 'res', 'harder-256.png'))
 print(out)
+# macOS app icon (HARDER.app/Contents/Resources/harder.icns), PNG entries 16..1024 px
+im.save(os.path.join(root, 'plugins', 'Harder', 'res', 'harder.icns'))

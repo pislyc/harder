@@ -6,8 +6,7 @@
 #include <cstdio>
 #include <vector>
 #include <algorithm>
-#include <xmmintrin.h>
-#include <pmmintrin.h>
+#include "ftz.hpp"
 using namespace hd;
 
 static double cpuUs() { timespec t; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t); return t.tv_sec * 1e6 + t.tv_nsec / 1e3; }
@@ -34,7 +33,7 @@ static void loadProject(Engine& E, const Project& P) {
 }
 
 int main() {
-  _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON); _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+  harderFtz();
   std::unique_ptr<Project> P(new Project()); std::unique_ptr<Engine> E(new Engine());
   const double SRS[] = { 48000, 96000 };
   for (double sr : SRS) {

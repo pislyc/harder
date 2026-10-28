@@ -1,0 +1,75 @@
+HARDER 2.0.1 — Synth percussion & groove box — macOS standalone program
+Universal: Apple Silicon (M1–M4) + Intel, macOS 10.15 Catalina or later
+=================================================================================================
+
+包里有什么 / In this package
+  HARDER.app     独立程序，不需要 DAW。The standalone program, no DAW needed.
+  INSTALL.txt    完整的使用说明（与 Windows 独立程序相同；其中 Windows 专有的部分见下面的对照）。
+                 The full manual (the same program as on Windows; the macOS differences are listed below).
+  macOS 版只有独立程序，没有 VST3 / AU 插件。There is no macOS plugin (VST3 / AU), only the program.
+  声音引擎与 Windows / Linux 版逐位相同（36 个测试渲染在 arm64 和 x86_64 上与参考渲染 bit-identical）。
+  The sound engine is bit-identical to the Windows / Linux builds (36 test renders, arm64 and x86_64).
+
+=================================================================================================
+安装 Install
+=================================================================================================
+  1. 解压，把 HARDER.app 拖进"应用程序"文件夹。Unzip and drag HARDER.app into Applications.
+  2. 程序没有 Apple 公证（notarization，需要付费开发者账号），只有 ad-hoc 签名，所以第一次打开会被拦：
+     The app is not notarized by Apple (ad-hoc signed only), so the first start is blocked:
+       macOS 15 Sequoia 及以后 / and later:
+         双击 HARDER → 提示"无法验证"，点"完成" → 系统设置 → 隐私与安全性 → 页面底部 "仍要打开" → 确认。
+         Double-click, "Done" > System Settings > Privacy & Security > "Open Anyway" at the bottom > confirm.
+       macOS 14 及以前 / and earlier:
+         按住 Control 点 HARDER.app（或右键）→ 打开 → 打开。Control-click (right-click) > Open > Open.
+       或者在"终端"里一次解决 / or once in Terminal:
+         xattr -dr com.apple.quarantine /Applications/HARDER.app
+     之后正常双击即可。After that it opens normally.
+  3. 第一次运行时 macOS 会问"HARDER 想访问'文稿'文件夹中的文件"：选"允许"。工程、设置、音色库都在那里。
+     macOS asks whether HARDER may access the Documents folder: Allow (projects, settings and the library live there).
+
+=================================================================================================
+和 Windows 版的不同 / Differences from the Windows program (INSTALL.txt)
+=================================================================================================
+文件夹 Folder
+  ~/Documents/HARDER/ （"文稿/HARDER"）：autosave.json、ui.json、settings.json、control.json、Library/。
+  结构与 Windows 的 文档\HARDER 完全相同，整个文件夹可以在 Mac 和 Windows 之间拷贝（工程、音色、groove、套件）。
+  Same layout as Documents\HARDER on Windows; the whole folder can be copied between the two.
+
+退出 Quit
+  Cmd+Q、Dock 菜单"退出"、关窗口（红色按钮或 Cmd+W）都一样：先自动保存，再正常关闭音频。
+  Cmd+Q, Quit in the Dock menu and closing the window all save first and shut the audio down cleanly.
+  Cmd+H 隐藏，Cmd+M 最小化。Cmd+H hides, Cmd+M minimizes.
+
+音频 Audio (LAB → AUDIO)
+  CoreAudio。输出设备：System default 或列表中的设备。采样率按钮会直接设置设备的采样率（44.1 / 48 / 88.2 / 96 kHz）。
+  缓冲 64–2048 样本。CoreAudio; the rate chips set the device's rate; buffer 64–2048 samples.
+
+MIDI (LAB → AUDIO)
+  CoreMIDI：一个 MIDI 端口可以同时给多个程序用（Windows 不行），所以不用为了别的程序取消勾选。
+  同一台 Mac 上的程序之间传 MIDI / 时钟：用 IAC 总线（"音频 MIDI 设置" → 窗口 → 显示 MIDI 工作室 → 双击
+  IAC Driver → 勾选"设备在线"），然后在 HARDER 和另一个程序里都勾选 IAC 端口。
+  CoreMIDI ports are shared between programs. Between programs on the same Mac use the IAC Driver
+  (Audio MIDI Setup > Window > Show MIDI Studio > IAC Driver > "Device is online").
+
+键盘 Keyboard
+  按键按物理位置记录，和 Windows 一样（AZERTY、德语等布局位置相同）；CONTROL 页显示你布局上的字。
+  撤销：Cmd+Z（Ctrl+Z 也可以）。Undo: Cmd+Z (or Ctrl+Z). Keys work by position like on Windows.
+  Cmd+Q / H / M / W 归 macOS 菜单，不能映射。Cmd+Q / H / M / W belong to the menu.
+  按住字母键不会弹出重音字符选择（按住步键做 parameter lock 时会碍事）；在名称里输入带重音的字母用 Option 组合键。
+  Holding a letter key does not open the accent popup (it would get in the way of held step keys); type accented
+  letters in names with Option + key.
+
+中文名称 Chinese names
+  使用系统字体（苹方 PingFang / 华文黑体 STHeiti）显示中文、日文、韩文的名字。
+  Chinese / Japanese / Korean names use the system fonts.
+
+=================================================================================================
+已知限制 Known limits
+=================================================================================================
+  - 没有 Apple 公证（见上面"安装"第 2 步）。Not notarized (see Install, step 2).
+  - 只有独立程序，没有插件。Standalone only, no plugin.
+  - 文件对话框（IMPORT WAV 等）不按类型过滤，选错类型的文件会提示读取失败。
+    The file dialogs show all file types; a wrong file is refused with a message.
+
+许可 License: GPL-3.0 (LICENSE.txt); fonts OFL; DPF ISC; musl MIT; RtAudio / RtMidi MIT (licenses/).
+Source: https://github.com/pislyc/harder

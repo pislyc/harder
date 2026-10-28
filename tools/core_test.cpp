@@ -10,8 +10,7 @@
 #include <ctime>
 #include <array>
 #include <algorithm>
-#include <xmmintrin.h>
-#include <pmmintrin.h>
+#include "ftz.hpp"
 using namespace hd;
 namespace hd { Core* harderCore(void*) { return nullptr; } }
 static int fails = 0;
@@ -29,7 +28,7 @@ static void render(Engine& E, std::vector<float>& out, int n) { out.resize(2 * n
 
 int main(int argc, char** argv) {
   const int uiRate = argc > 2 ? std::atoi(argv[2]) : 0;   // UI edits per second (0 = as fast as possible)
-  _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON); _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+  harderFtz();
   // 1. project through the command link == project loaded directly
   {
     std::unique_ptr<Core> C(new Core()); defaultProject(*C->S);

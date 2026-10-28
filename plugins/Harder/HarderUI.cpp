@@ -177,7 +177,7 @@ class HarderUI : public UI {
   enum TeAct { TE_NONE, TE_NEWCAT_S, TE_RENCAT_S, TE_RENITEM_S, TE_SAVE_S, TE_NEWCAT_G, TE_RENCAT_G, TE_RENITEM_G, TE_SAVE_G, TE_NEWCAT_K, TE_RENCAT_K, TE_RENITEM_K, TE_SAVE_K };
   struct TextEdit { int act = TE_NONE; std::string text, title, arg; } te;
   double lastKeyT = 0; int lastKeyCode = -1; bool sawPuglText = false;
-  FontId fCjk = -1; bool cjkTried = false;
+  FontId fCjk = -1; bool cjkTried = false; std::string cjkPath;
   // ---- keyboard / MIDI controller mapping (standalone)
   ControlMap cmap; int ctlGroup = 0, midiScroll = 0; Action keyLearn, learnAct; bool midiLearn = false, learnFixed = false;
   std::string lastMidi; std::set<int> funcSrc, allSrc, ccDown; int learnedSrc = -1; double learnedUntil = 0;
@@ -186,6 +186,7 @@ public:
   HarderUI() : UI(DISTRHO_UI_DEFAULT_WIDTH, DISTRHO_UI_DEFAULT_HEIGHT) {
     core = harderCore(getPluginInstancePointer());
     standalone = harderIsStandalone();
+    if (standalone) macStandaloneInit();
     for (int& p : pos) p = -1;
     fMark = createFontFromMemory("mark", hdfonts::font_mark, hdfonts::font_mark_size, false);
     fPrint = createFontFromMemory("print", hdfonts::font_print, hdfonts::font_print_size, false);
@@ -875,6 +876,41 @@ protected:
     wavePeak = 0; waveLast = 0; for (int i = 0; i < N; i++) { const float a = std::fabs(wave[i]); if (a > wavePeak) wavePeak = a; if (a > 0.001f) waveLast = i; }
   }
 
+  // ================= unattended self-test (CI) =================
+  // HARDER_SELFTEST=<file> (any build): at 3 s Space is pressed by its key position (the OS key code, through the same
+  // mapping as a real key) and <file>.ready is written (a screenshot can be taken then), at 6 s a JSON report goes
+  // to <file>, Space is pressed again and the program quits the normal way (macOS: NSApp terminate:, the Cmd+Q path).
+  // Nothing happens without the variable.
+  int stPhase = -1; double stT0 = 0; std::string stPath; bool stPlayed = false;
+  static int spaceOsKeycode() {
+#ifdef _WIN32
+    return 0x39;
+#elif defined(__APPLE__)
+    return 0x31;   // kVK_Space
+#else
+    return 0x39 + 8;
+#endif
+  }
+  void selfTestKey(bool press) { KeyboardEvent ev; ev.press = press; ev.key = ' '; ev.keycode = (uint)spaceOsKeycode(); ev.mod = 0; onKeyboard(ev); }
+  void selfTestStep(double now) {
+    if (stPhase == -1) { const char* p = std::getenv("HARDER_SELFTEST"); stPhase = p && *p ? 0 : 99; if (p) stPath = p; stT0 = now; return; }
+    if (stPhase == 0 && now - stT0 > 3000) { stPhase = 1; selfTestKey(true); selfTestKey(false); writeFileAtomic(stPath + ".ready", std::string("1")); }
+    if (stPhase == 1) toast("SELFTEST \xe8\x87\xaa\xe6\xa3\x80 \xe4\xb8\xad\xe6\x96\x87");   // shown until the report (CJK font check)
+    if (stPhase == 1 && now - stT0 > 6000) {
+      stPhase = 2; stPlayed = core->eng->fb.playing.load();
+      const char* api = getAudioBackendName(); char b[2048];
+      std::snprintf(b, sizeof b, "{\"version\":\"%u.%u.%u\",\"backend\":\"%s\",\"deviceOpen\":%s,\"device\":\"%s\",\"sampleRate\":%u,\"bufferSize\":%u,"
+        "\"midiIn\":%d,\"midiOut\":%d,\"spaceKeyStartedPlay\":%s,\"spaceScancode\":%d,\"keyNameQ\":\"%s\",\"cjkFont\":\"%s\",\"scale\":%.2f,\"dspLoadPermille\":%u}\n",
+        (unsigned)HARDER_VER_MAJOR, (unsigned)HARDER_VER_MINOR, (unsigned)HARDER_VER_PATCH, api ? api : "", isAudioDeviceOpen() ? "true" : "false", jsonSafe(currentDev).c_str(),
+        audioRate(), audioBuffer(), (int)midiNames.size(), (int)midiOutNames.size(), stPlayed ? "true" : "false",
+        physKeyFromOs(spaceOsKeycode()), jsonSafe(keyNameForScancode(0x10)).c_str(), jsonSafe(cjkPath).c_str(), getScaleFactor(), core->cpuPermille.load());
+      writeFileAtomic(stPath, std::string(b));
+      if (stPlayed) { selfTestKey(true); selfTestKey(false); }
+      if (!requestAppQuit()) getWindow().close();
+    }
+  }
+  static std::string jsonSafe(const std::string& v) { std::string o; for (char c : v) { if (c == '"' || c == '\\') o += '\\'; if ((unsigned char)c >= 0x20) o += c; } return o; }
+
   // ================= idle =================
   void uiIdle() override {
     if (!core) return;
@@ -885,6 +921,7 @@ protected:
     // the driver stopped (device unplugged, taken by another program): try again every 3 s
     if (standalone && settingsApplied && !isAudioDeviceOpen() && now >= nextAudioRetry) { nextAudioRetry = now + 3000; reconnectAudio(); }
     if (standalone && now >= nextAutosave) { nextAutosave = now + 2000; autosaveNow(); }
+    if (standalone) selfTestStep(now);
     if (drawer && ((labTab == TAB_SOUND && sndSrc == 1) || (labTab == TAB_GROOVE && grvSrc == 1) || (labTab == TAB_KITS && kitSrc == 1))) scanLib();
     if (autoLoad) autoLoadScan();
     if (standalone) { pollMidi();
@@ -938,7 +975,8 @@ protected:
   float txt(float x, float y, const std::string& s, Color c, int align = ALIGN_LEFT | ALIGN_BASELINE) { cjk(s); fillColor(c); textAlign(align); return text(x, y, s.c_str(), nullptr); }
   float txtW(const std::string& s) { cjk(s); Rectangle<float> b; return textBounds(0, 0, s.c_str(), nullptr, b); }
   // names typed in Chinese / Japanese / Korean: the panel fonts have no such glyphs, so a system font is added as a
-  // fallback the first time one is drawn (Microsoft YaHei on Windows, Noto CJK / WenQuanYi on Linux)
+  // fallback the first time one is drawn (Microsoft YaHei on Windows, PingFang / STHeiti on macOS, Noto CJK /
+  // WenQuanYi on Linux)
   void cjk(const std::string& s) {
     if (cjkTried) return;
     bool need = false;
@@ -948,11 +986,16 @@ protected:
 #ifdef _WIN32
     const char* w = std::getenv("WINDIR"); const std::string fd = std::string(w && *w ? w : "C:\\Windows") + "\\Fonts\\";
     static const char* const F[] = { "msyh.ttc", "msyh.ttf", "simhei.ttf", "simsun.ttc", "YuGothM.ttc", "meiryo.ttc", "malgun.ttf" };
-    for (const char* f : F) { const std::string p = fd + f; if (pathExists(p)) { fCjk = createFontFromFile("cjk", p.c_str()); if (fCjk >= 0) break; } }
+    for (const char* f : F) { const std::string p = fd + f; if (pathExists(p)) { fCjk = createFontFromFile("cjk", p.c_str()); if (fCjk >= 0) { cjkPath = p; break; } } }
+#elif defined(__APPLE__)
+    static const char* const F[] = { "/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/STHeiti Light.ttc",
+      "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+      "/Library/Fonts/Arial Unicode.ttf", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf" };
+    for (const char* f : F) if (pathExists(f)) { fCjk = createFontFromFile("cjk", f); if (fCjk >= 0) { cjkPath = f; break; } }
 #else
     static const char* const F[] = { "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
       "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc", "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf" };
-    for (const char* f : F) if (pathExists(f)) { fCjk = createFontFromFile("cjk", f); if (fCjk >= 0) break; }
+    for (const char* f : F) if (pathExists(f)) { fCjk = createFontFromFile("cjk", f); if (fCjk >= 0) { cjkPath = f; break; } }
 #endif
     if (fCjk >= 0) for (FontId f : { fMark, fPrint, fPrintB, fOled, fNum }) if (f >= 0) nvgAddFallbackFontId(getContext(), f, fCjk);
   }
@@ -1104,7 +1147,7 @@ protected:
     if (!d.valid()) { press(id, r); return; }
     if (press(id, r)) {
       if (dbl) { resetVal(i); dbl = false; }
-      else { drag.id = id; drag.kind = 1; drag.y = my; drag.acc = getVal(i); drag.target = i; edited = edited; }
+      else { drag.id = id; drag.kind = 1; drag.y = my; drag.acc = getVal(i); drag.target = i; }
     }
     if (scrolled(r)) { const double range = d.max - d.min; setVal(i, stepRound(getVal(i) + (wheel > 0 ? 1 : -1) * (range >= 50 ? ((mods & kModifierShift) ? 0.2 : 1) : 1), d), false); }
   }
@@ -2492,7 +2535,13 @@ protected:
       if (chip(ID_CLOCK + 3, R(rx + 220, c.y + 258, 22, 20), "+", false, true, off >= 100)) { core->clockOffsetMs.store(off + 1); saveSettings(); }
     }
     if (btn(ID_RESCAN, R(rx, c.y + 290, 120, 28), "RESCAN")) { refreshAudioLists(); toast("DEVICES RESCANNED"); }
+#if defined(__APPLE__)
+    para(rx + 130, c.y + 288, rw - 130, "macOS shares MIDI ports between programs; to other apps on this Mac use the IAC Driver (Audio MIDI Setup). Offset: later (+) if the other device runs ahead.", th.print, 10.5f);
+#elif defined(_WIN32)
     para(rx + 130, c.y + 288, rw - 130, "Windows lets one program at a time use a MIDI port: untick it here to use it elsewhere. Offset: later (+) if the other device runs ahead.", th.print, 10.5f);
+#else
+    para(rx + 130, c.y + 288, rw - 130, "Untick a port here to leave it to other programs. Offset: later (+) if the other device runs ahead.", th.print, 10.5f);
+#endif
   }
 
   // ================= DPF events =================
@@ -2558,14 +2607,18 @@ protected:
   }
 
   // ================= standalone keyboard (web shortcuts, by physical key position) =================
-  // Windows gives the set-1 scan code, X11 the evdev code + 8; for these keys the evdev code equals the scan code.
-  static int physKey(const KeyboardEvent& ev) {
+  // Windows gives the set-1 scan code, X11 the evdev code + 8 (for these keys the evdev code equals the scan code),
+  // macOS its virtual key code (kVK_*, a position too), translated to the set-1 code (macKeyToScancode, FileSys).
+  static int physKeyFromOs(int code) {
 #ifdef _WIN32
-    return (int)ev.keycode;
+    return code;
+#elif defined(__APPLE__)
+    return macKeyToScancode(code);
 #else
-    return (int)ev.keycode - 8;
+    return code - 8;
 #endif
   }
+  static int physKey(const KeyboardEvent& ev) { return physKeyFromOs((int)ev.keycode); }
   enum : int { SC_ESC = 0x01, SC_1 = 0x02, SC_8 = 0x09, SC_Q = 0x10, SC_I = 0x17, SC_A = 0x1E, SC_F = 0x21, SC_L = 0x26, SC_Z = 0x2C, SC_COMMA = 0x33, SC_SPACE = 0x39 };
   // one-line name field: works in the plugin too (keys arrive while the field is open)
   bool textKey(const KeyboardEvent& ev) {

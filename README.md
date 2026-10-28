@@ -1,7 +1,7 @@
 # HARDER — standalone program and VST3 plugin (source)
 
 C++ port of the HARDER web groovebox (synth percussion & groove box), built with DPF: `HARDER.exe` (standalone) and
-`HARDER.vst3` (plugin) from the same code.
+`HARDER.vst3` (plugin) from the same code, and `HARDER.app`, the standalone for macOS (Universal: Apple Silicon + Intel).
 
 ```
 plugins/Harder/   Engine.hpp      DSP engine, line-by-line port of the web engine.js
@@ -12,14 +12,16 @@ plugins/Harder/   Engine.hpp      DSP engine, line-by-line port of the web engin
                   Sample.hpp      SAMPLE machine data: WAV decoding, stored formats, ids, base64 (not in the web app)
                   Library.hpp     the shared user library (folders = categories, sound / groove / kit files), docs/LIBRARY.md
                   Clock.hpp       MIDI clock follower (alpha-beta tracker) and clock generator (standalone)
-                  FileSys.cpp/hpp UTF-8 file helpers (wide-character API on Windows)
+                  FileSys.cpp/hpp UTF-8 file helpers (wide-character API on Windows); macOS key positions and names
                   Control.hpp     standalone keyboard / MIDI-controller mappings (LAB > CONTROL, control.json)
                   HostParams.hpp  parameters exposed to the host
                   HarderShared.hpp lock-free command link UI -> audio, host parameter mirror and ownership
                   HarderPlugin.cpp DPF plugin (audio thread, Live transport / MIDI clock sync, MIDI, state, track outputs)
                   HarderUI.cpp    NanoVG UI (main face + LAB drawer: SAMPLE, KITS, SONG...; AUDIO, CONTROL in the standalone)
-                  res/            app icon (tools/make_icon.py)
+                  res/            app icons (tools/make_icon.py: .ico, .icns), macOS Info.plist
 tools/            equivalence, generator, export, host-parameter, VST3-host, sample/library and CPU tests
+tools/expected/   the 36 equivalence scenarios and the SHA-256 of their Linux x86-64 renders (tools/equiv.sh, CI)
+.github/workflows/macos.yml   macOS build + tests on GitHub Actions (artifact: HARDER-<version>-macos.zip)
 docs/LIBRARY.md   the library format for other programs (sounds, grooves, WAV, parameter tables)
 dpf/              DPF with small patches, each behind a define set in plugins/Harder/Makefile:
                   DPF_PARAM_TEXT_HOOK       parameter value text from the plugin
@@ -33,6 +35,9 @@ dpf/              DPF with small patches, each behind a define set in plugins/Ha
                   DPF_WIN_SAVE_DEFAULT_NAME Windows save dialog: suggested name, overwrite prompt
                   DPF_VST3_AUX_OUTPUT_GROUPS VST3: output port groups after the first are aux buses (off by
                                             default); an output bus the host does not use reaches the plugin as nullptr
+                  DPF_MACOS_APP_MENU        macOS standalone: application / Window menus; Quit (Cmd+Q, Dock, logout)
+                                            closes the windows so the program ends the normal way (autosave, audio stop)
+                  DPF_MAC_SAVE_DEFAULT_NAME macOS save panel: suggested file name
                   (DPF_NATIVE_AUDIO_SETTINGS also: MIDI output ports for messages sent at once, MIDI clock let through
                    RtMidi and handed to the plugin on arrival via dpf_midi_realtime_hook)
 ```
@@ -47,10 +52,23 @@ a plain clone). `dpf/` is the upstream DPF repository pinned as a submodule; the
 Build (Linux host): `scripts/build.sh windows` (MinGW-w64, static: bin-windows/HARDER.vst3 and HARDER.exe) or
 `scripts/build.sh linux` (bin/HARDER.vst3 and the standalone bin/HARDER). `scripts/package.sh` writes dist/.
 
+Build (Mac, Xcode command line tools): `scripts/setup-dpf.sh && scripts/build.sh macos` writes bin-macos/HARDER.app
+(Universal, macOS 10.15+, ad-hoc signed; `MACOS_ARCHS="-arch arm64"` for one architecture), `scripts/package-macos.sh`
+dist/HARDER-<version>-macos.zip. The same runs on GitHub Actions (`.github/workflows/macos.yml`, on every push to main,
+on tags, or by hand: Actions > macOS standalone > Run workflow); the run's Summary page lists every result and the zip
+is the run's artifact. The version comes from `HARDER_VER_*` in HarderShared.hpp.
+
+Self-test (any standalone build): `HARDER_SELFTEST=<file> HARDER` presses Space by its key position after 3 s, writes
+`<file>.ready`, then at 6 s a JSON report (audio backend and device, MIDI ports, whether Space started the sequencer,
+the key names of the layout, the CJK font found, the UI scale), and quits the normal way (on macOS through NSApp
+`terminate:`, the Cmd+Q path). CI checks the report, the exit code and the autosave written on quit.
+
 Tests (need the web build in `$HARDER_WEB`, default `/home/claude/strobe`):
 
 ```
-tools/build_tools.sh OUT              # builds render, stress, core_test, gen_test against libhmath
+tools/build_tools.sh OUT              # builds render, stress, core_test, gen_test... against libhmath (env CC, CXX, TOOLS_ARCH)
+tools/equiv.sh OUT/render EQ tools/expected/render-sha256.txt   # 36 renders: vs the web engine (if present) and bit-identical
+                                         # to the Linux x86-64 renders; RUN=qemu-aarch64 / RUN="arch -x86_64" for other CPUs
 node tools/scen.js OUT 48000          # scenarios + JS reference renders
 OUT/render OUT/x.json x.cpp.f32
 node tools/compare.js OUT/x.js.f32 x.cpp.f32 48000

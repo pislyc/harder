@@ -27,7 +27,10 @@ bool removeFile(const std::string& path);
 bool removeDir(const std::string& path);                          // empty directories only
 bool copyFile(const std::string& from, const std::string& to);
 void openInFileManager(const std::string& path);                  // Explorer / the desktop's file manager
-std::string keyNameForScancode(int sc);                           // the key's name in the active layout (Windows), "" if unknown
+std::string keyNameForScancode(int sc);                           // the key's name in the active layout (Windows, macOS), "" if unknown
+int macKeyToScancode(int vk);                                     // macOS virtual key code (kVK_*) -> set-1 scan code (other OS: vk)
+bool requestAppQuit();                                            // macOS: [NSApp terminate:] (the Cmd+Q path); false elsewhere
+void macStandaloneInit();                                         // macOS: no accent popup when a key is held (step keys)
 
 inline std::string joinPath(const std::string& a, const std::string& b) {
   if (a.empty()) return b; const char c = a.back(); return (c == '/' || c == '\\') ? a + b : a + PATH_SEP + b;
