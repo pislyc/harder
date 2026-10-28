@@ -882,6 +882,24 @@ protected:
   // to <file>, Space is pressed again and the program quits the normal way (macOS: NSApp terminate:, the Cmd+Q path).
   // Nothing happens without the variable.
   int stPhase = -1; double stT0 = 0; std::string stPath; bool stPlayed = false;
+  bool stWantPixels = false; std::string stGl = "\"glRenderer\":\"\",\"glViewport\":\"\",\"glDistinctColors\":-1";
+  // what the GPU actually drew (independent of screenshots): read back the finished frame, count the distinct colours
+  // on a 64 x 32 grid (a blank frame has 1)
+  void selfTestReadPixels() {
+    GLint vp[4] = { 0, 0, 0, 0 }; glGetIntegerv(GL_VIEWPORT, vp);
+    const char* rn = (const char*)glGetString(GL_RENDERER);
+    std::set<uint32_t> cols;
+    if (vp[2] > 0 && vp[3] > 0) {
+      std::vector<uint8_t> px((size_t)vp[2] * vp[3] * 4);
+      glPixelStorei(GL_PACK_ALIGNMENT, 1); glReadPixels(vp[0], vp[1], vp[2], vp[3], GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+      for (int gy = 0; gy < 32; gy++) for (int gx = 0; gx < 64; gx++) {
+        const size_t i = ((size_t)(gy * vp[3] / 32) * vp[2] + (size_t)(gx * vp[2] / 64)) * 4;
+        cols.insert((uint32_t)px[i] << 16 | (uint32_t)px[i + 1] << 8 | px[i + 2]);
+      }
+    }
+    char b[400]; std::snprintf(b, sizeof b, "\"glRenderer\":\"%s\",\"glViewport\":\"%dx%d\",\"glDistinctColors\":%d", jsonSafe(rn ? rn : "").c_str(), vp[2], vp[3], (int)cols.size());
+    stGl = b;
+  }
   static int spaceOsKeycode() {
 #ifdef _WIN32
     return 0x39;
@@ -894,16 +912,16 @@ protected:
   void selfTestKey(bool press) { KeyboardEvent ev; ev.press = press; ev.key = ' '; ev.keycode = (uint)spaceOsKeycode(); ev.mod = 0; onKeyboard(ev); }
   void selfTestStep(double now) {
     if (stPhase == -1) { const char* p = std::getenv("HARDER_SELFTEST"); stPhase = p && *p ? 0 : 99; if (p) stPath = p; stT0 = now; return; }
-    if (stPhase == 0 && now - stT0 > 3000) { stPhase = 1; selfTestKey(true); selfTestKey(false); writeFileAtomic(stPath + ".ready", std::string("1")); }
+    if (stPhase == 0 && now - stT0 > 3000) { stPhase = 1; selfTestKey(true); selfTestKey(false); writeFileAtomic(stPath + ".ready", std::string("1")); stWantPixels = true; repaint(); }
     if (stPhase == 1) toast("SELFTEST \xe8\x87\xaa\xe6\xa3\x80 \xe4\xb8\xad\xe6\x96\x87");   // shown until the report (CJK font check)
     if (stPhase == 1 && now - stT0 > 6000) {
       stPhase = 2; stPlayed = core->eng->fb.playing.load();
       const char* api = getAudioBackendName(); char b[2048];
       std::snprintf(b, sizeof b, "{\"version\":\"%u.%u.%u\",\"backend\":\"%s\",\"deviceOpen\":%s,\"device\":\"%s\",\"sampleRate\":%u,\"bufferSize\":%u,"
-        "\"midiIn\":%d,\"midiOut\":%d,\"spaceKeyStartedPlay\":%s,\"spaceScancode\":%d,\"keyNameQ\":\"%s\",\"cjkFont\":\"%s\",\"scale\":%.2f,\"dspLoadPermille\":%u}\n",
+        "\"midiIn\":%d,\"midiOut\":%d,\"spaceKeyStartedPlay\":%s,\"spaceScancode\":%d,\"keyNameQ\":\"%s\",\"cjkFont\":\"%s\",\"scale\":%.2f,\"window\":\"%ux%u\",\"dspLoadPermille\":%u,%s}\n",
         (unsigned)HARDER_VER_MAJOR, (unsigned)HARDER_VER_MINOR, (unsigned)HARDER_VER_PATCH, api ? api : "", isAudioDeviceOpen() ? "true" : "false", jsonSafe(currentDev).c_str(),
         audioRate(), audioBuffer(), (int)midiNames.size(), (int)midiOutNames.size(), stPlayed ? "true" : "false",
-        physKeyFromOs(spaceOsKeycode()), jsonSafe(keyNameForScancode(0x10)).c_str(), jsonSafe(cjkPath).c_str(), getScaleFactor(), core->cpuPermille.load());
+        physKeyFromOs(spaceOsKeycode()), jsonSafe(keyNameForScancode(0x10)).c_str(), jsonSafe(cjkPath).c_str(), getScaleFactor(), getWidth(), getHeight(), core->cpuPermille.load(), stGl.c_str());
       writeFileAtomic(stPath, std::string(b));
       if (stPlayed) { selfTestKey(true); selfTestKey(false); }
       if (!requestAppQuit()) getWindow().close();
@@ -2550,6 +2568,7 @@ protected:
     std::lock_guard<std::recursive_mutex> g(core->mtx);
     const float s = (float)totalScale();
     save(); scale(s, s); ph = PH_DRAW; consumed = false; frame(); restore();
+    if (stWantPixels) { stWantPixels = false; NanoVG::endFrame(); selfTestReadPixels(); NanoVG::beginFrame(getWidth(), getHeight()); }   // self-test only
   }
   void runPhase(Phase p, float x, float y, uint m) {
     const float s = (float)totalScale(); ph = p; mx = x / s; my = y / s; mods = m; consumed = false;

@@ -106,7 +106,7 @@ jobs:
             if [ $ok = 0 ]; then kill -9 $pid; fi
             rc=0; wait $pid || rc=$?
             cp "$H/selftest.json" "selftest-$a.json" 2>/dev/null || true
-            files=$(ls "$H/Documents/HARDER" 2>/dev/null | tr '\n' ' ')
+            files=$(ls "$H/Documents/HARDER" 2>/dev/null | tr '\n' ' ' || true)
             line="- app $a: $([ $ok = 1 ] && echo "exit code $rc" || echo "did not quit within 30 s (killed)"); ready marker: $([ -f "$H/selftest.json.ready" ] && echo yes || echo no); report: \`$(cat "$H/selftest.json" 2>/dev/null || echo none)\`; files in Documents/HARDER: ${files:-none}"
             echo "$line" | tee -a "$SUM"
             echo "--- app-$a.log (last 40 lines)"; tail -n 40 "app-$a.log"
